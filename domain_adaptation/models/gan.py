@@ -120,7 +120,7 @@ class UNet1D(nn.Module):
             if i < len(self.pool_layers):
                 x = self.pool_layers[i](x)
         x = self.bottleneck(x)
-        for block, skip in zip(self.up_blocks, reversed(skips), strict=False):
+        for block, skip in zip(self.up_blocks, reversed(skips)):
             x = block(x, skip)
         return torch.tanh(self.final_conv(x))
 
