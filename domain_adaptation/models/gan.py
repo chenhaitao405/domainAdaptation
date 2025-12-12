@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Tuple, List, Optional
 
 import torch
 import torch.nn as nn
@@ -174,6 +174,8 @@ class GanConfig:
     gan_loss_weight: float = 1.0
     betas: Tuple[float, float] = (0.5, 0.999)
     device: str = "cuda"
+    sim_channel_scale: Optional[List[float]] = None
+    real_channel_scale: Optional[List[float]] = None
 
 
 class Sim2RealTranslator(UNet1D):
@@ -219,6 +221,8 @@ class DomainAdaptationGAN(nn.Module):
         self.disc_sim = PatchDiscriminator1D(config.sim_channels, config.base_channels)
 
         self.to(device)
+        self.real_scale = self._prepare_scale_tensor(config.real_channel_scale, config.real_channels)
+        self.sim_scale = self._prepare_scale_tensor(config.sim_channel_scale, config.sim_channels)
 
         gen_params = list(self.sim2real.parameters()) + list(self.real2sim.parameters())
         disc_params = list(self.disc_real.parameters()) + list(self.disc_sim.parameters())
@@ -232,6 +236,22 @@ class DomainAdaptationGAN(nn.Module):
             lr=config.disc_learning_rate,
             betas=config.betas,
         )
+
+    def _prepare_scale_tensor(self, values: Optional[List[float]], channels: int) -> Optional[torch.Tensor]:
+        if values is None:
+            return None
+        if len(values) != channels:
+            raise ValueError("channel scale长度与通道数不匹配")
+        tensor = torch.tensor(values, dtype=torch.float32, device=self.device)
+        tensor = torch.clamp(tensor, min=1e-6)
+        return tensor.view(1, channels, 1)
+
+    def _normalized_mse(self, prediction: torch.Tensor, target: torch.Tensor, domain: str) -> torch.Tensor:
+        diff = prediction - target
+        scale = self.real_scale if domain == "real" else self.sim_scale
+        if scale is None:
+            return (diff ** 2).mean()
+        return ((diff ** 2) / scale).mean()
 
     def set_requires_grad(self, modules: Iterable[nn.Module], flag: bool) -> None:
         for module in modules:
@@ -250,13 +270,19 @@ class DomainAdaptationGAN(nn.Module):
 
         cycle_sim = self.real2sim(fake_real)
         cycle_real = self.sim2real(fake_sim)
-        cycle_loss = F.l1_loss(cycle_sim, sim_inputs) + F.l1_loss(
-            cycle_real, real_inputs
+        cycle_loss = self._normalized_mse(cycle_sim, sim_inputs, "sim") + self._normalized_mse(
+            cycle_real, real_inputs, "real"
         )
 
-        id_real = F.l1_loss(self.sim2real(real_inputs), real_inputs)
-        id_sim = F.l1_loss(self.real2sim(sim_inputs), sim_inputs)
-        identity_loss = id_real + id_sim
+        identity_loss = torch.tensor(0.0, device=self.device)
+        if real_inputs.shape[1] == self.config.sim_channels:
+            identity_loss = identity_loss + self._normalized_mse(
+                self.sim2real(real_inputs), real_inputs, "real"
+            )
+        if sim_inputs.shape[1] == self.config.real_channels:
+            identity_loss = identity_loss + self._normalized_mse(
+                self.real2sim(sim_inputs), sim_inputs, "sim"
+            )
 
         total_loss = (
             self.config.gan_loss_weight * adv_loss
