@@ -85,6 +85,7 @@ class DatasetConfig:
         default_factory=lambda: dict(DEFAULT_PARTICIPANT_MASSES)
     )
     action_patterns: Optional[List[str]] = None
+    filter_nan_trials: bool = False
 
     model_path: str = "models/trained_tcn.tar"
     window_size: int = 280

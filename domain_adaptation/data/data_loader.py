@@ -114,6 +114,9 @@ class DataManager:
             cache_dir: Directory for cache files
             cache_suffix: Additional suffix for cache file naming
         """
+        if not getattr(config, 'filter_nan_trials', True):
+            return list(range(len(full_dataset)))
+
         os.makedirs(cache_dir, exist_ok=True)
 
         if isinstance(config.side, list):

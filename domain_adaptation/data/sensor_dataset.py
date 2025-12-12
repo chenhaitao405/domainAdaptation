@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import hashlib
 from typing import List, Dict, Optional, Tuple
 import pandas as pd
 import torch
@@ -18,7 +20,8 @@ class SensorDataset(Dataset):
                  action_patterns: Optional[List[str]] = None,
                  device: torch.device = torch.device("cpu"),
                  input_file_suffix: str = "_exo.csv",
-                 label_file_suffix: str = "_moment_filt.csv"):
+                 label_file_suffix: str = "_moment_filt.csv",
+                 cache_dir: str = "cache"):
         self.data_dir = data_dir
         self.input_names = input_names
         self.label_names = label_names
@@ -28,6 +31,7 @@ class SensorDataset(Dataset):
         self.device = device
         self.input_file_suffix = input_file_suffix.lower()
         self.label_file_suffix = label_file_suffix.lower() if label_file_suffix else None
+        self.cache_dir = cache_dir
         self.trial_names = self._get_trial_names()
 
         if self.action_patterns:
@@ -125,8 +129,54 @@ class SensorDataset(Dataset):
                 return True
         return False
 
+    def _cache_key(self) -> str:
+        key = json.dumps({
+            "data_dir": self.data_dir,
+            "side": self.side,
+            "action_patterns": self.action_patterns,
+            "input_suffix": self.input_file_suffix,
+        }, sort_keys=True)
+        return hashlib.md5(key.encode()).hexdigest()
+
+    def _load_cached_trials(self) -> Optional[List[str]]:
+        if not self.cache_dir:
+            return None
+        os.makedirs(self.cache_dir, exist_ok=True)
+        cache_path = os.path.join(self.cache_dir, f"trials_{self._cache_key()}.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("data_dir") == self.data_dir:
+                    return data.get("trials", [])
+            except Exception:
+                return None
+        return None
+
+    def _save_cached_trials(self, trials: List[str]) -> None:
+        if not self.cache_dir:
+            return
+        os.makedirs(self.cache_dir, exist_ok=True)
+        cache_path = os.path.join(self.cache_dir, f"trials_{self._cache_key()}.json")
+        payload = {
+            "data_dir": self.data_dir,
+            "trials": trials,
+            "side": self.side,
+            "action_patterns": self.action_patterns,
+        }
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except Exception:
+            pass
+
     def _get_trial_names(self):
         '''Get all trial names in data_dir, filtered by action patterns if specified.'''
+        cached = self._load_cached_trials()
+        if cached is not None:
+            print(f"Loaded cached trial list ({len(cached)} entries) from {self.cache_dir}")
+            return cached
+
         participants = [participant for participant in os.listdir(self.data_dir)
                         if "." not in participant and participant != "LICENSE"]
 
@@ -147,6 +197,7 @@ class SensorDataset(Dataset):
         if self.action_patterns and action_stats:
             print(f"  - Action distribution: {action_stats}")
 
+        self._save_cached_trials(trial_names)
         return trial_names
 
     def _load_trial_data_train(self, trial_name: str):
