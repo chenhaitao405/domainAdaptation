@@ -152,7 +152,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--steps-per-epoch", type=int, default=None, help="每个epoch迭代次数；默认=min(len loaders))")
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--seq-len", type=int, default=256, help="裁剪窗口长度")
+    parser.add_argument("--seq-len", type=int, default=2560, help="裁剪窗口长度")
     parser.add_argument("--base-channels", type=int, default=64, help="U-Net初始通道数")
     parser.add_argument("--unet-depth", type=int, default=4, help="U-Net下采样深度")
     parser.add_argument("--gen-lr", type=float, default=5e-4)
@@ -164,7 +164,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-interval", type=int, default=50)
     parser.add_argument("--output-dir", type=str, default="runs", help="训练输出根目录")
-    parser.add_argument("--run-name", type=str, default=None, help="当前训练run名称")
+    parser.add_argument("--run-name", type=str, default=None, help="当前训练run名称（也用作MLflow run name）")
     parser.add_argument("--resume", type=str, default=None, help="可选checkpoint路径")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-real-trials", type=int, default=None, help="调试用，限制真实trial数")
@@ -172,7 +172,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlflow", action="store_true", help="启用MLflow记录")
     parser.add_argument("--mlflow-uri", type=str, default=None, help="可选MLflow Tracking URI")
     parser.add_argument("--mlflow-experiment", type=str, default="domain_adaptation", help="MLflow实验名")
-    parser.add_argument("--mlflow-run-name", type=str, default=None, help="MLflow run名称")
     return parser.parse_args()
 
 
@@ -229,8 +228,6 @@ def main() -> None:
 
     run_name, run_dir = _prepare_run_directory(args.output_dir, args.run_name)
     args.run_name = run_name
-    if args.mlflow_run_name is None:
-        args.mlflow_run_name = run_name
     print(f"Run directory: {run_dir}")
 
     if args.mlflow:
@@ -238,7 +235,7 @@ def main() -> None:
             mlflow.set_tracking_uri(args.mlflow_uri)
         mlflow.set_experiment(args.mlflow_experiment)
 
-    mlflow_run = mlflow.start_run(run_name=args.mlflow_run_name) if args.mlflow else None
+    mlflow_run = mlflow.start_run(run_name=run_name) if args.mlflow else None
 
     try:
         cpu_device = torch.device("cpu")
