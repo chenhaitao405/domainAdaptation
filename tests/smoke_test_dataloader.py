@@ -18,17 +18,18 @@ from domain_adaptation.config import DatasetConfig
 from domain_adaptation.data import DataManager
 
 
-def _locate_sim_file(data_dirs: List[str], trial_name: str) -> str:
-    """在给定 trial 目录下寻找 *_imu_sim.csv 文件。"""
+def _locate_sensor_file(data_dirs: List[str], trial_name: str, suffix: str) -> str:
+    """在给定 trial 目录下寻找指定后缀的文件。"""
+    suffix = suffix.lower()
     relative_path = trial_name.replace("\\", "/")
     for data_dir in data_dirs:
         candidate_dir = os.path.join(data_dir, relative_path)
         if not os.path.isdir(candidate_dir):
             continue
         for file_name in os.listdir(candidate_dir):
-            if file_name.endswith("_imu_sim.csv"):
+            if file_name.lower().endswith(suffix):
                 return os.path.join(candidate_dir, file_name)
-    raise FileNotFoundError(f"未在 {trial_name} 对应目录下找到 *_imu_sim.csv")
+    raise FileNotFoundError(f"未在 {trial_name} 对应目录下找到 {suffix}")
 
 
 def run_smoke_test():
@@ -50,13 +51,13 @@ def run_smoke_test():
     assert labels.shape[1] == len(config.label_names)
 
     trial_name = trial_names[0]
-    sim_file = _locate_sim_file(config.data_dirs, trial_name)
+    sim_file = _locate_sensor_file(config.data_dirs, trial_name, "_exo_sim.csv")
     df_sim = pd.read_csv(sim_file)
-    sim_columns = config.get_sim_sensor_columns(config.side)
-    missing_columns = [col for col in sim_columns if col not in df_sim.columns]
-    assert not missing_columns, (
-        "模拟传感器字段缺失: " + ", ".join(missing_columns)
-    )
+    resolved_columns = [name.replace("*", config.side) for name in config.input_names]
+    missing_columns = [col for col in resolved_columns if col not in df_sim.columns]
+    assert not missing_columns, "模拟传感器字段缺失: " + ", ".join(missing_columns)
+    # keep track of columns that exist in the sim csv so we can report them later
+    sim_columns = [col for col in resolved_columns if col in df_sim.columns]
 
     print("Smoke test passed!")
     print(f"  trials inspected: {trial_names}")

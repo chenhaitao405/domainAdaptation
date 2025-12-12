@@ -1,13 +1,15 @@
 import os
 import re
+import json
+import hashlib
 from typing import List, Dict, Optional, Tuple
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
 
-class RealDataset(Dataset):
-    '''Dataset for dynamically loading real exoskeleton input and label data.'''
+class SensorDataset(Dataset):
+    '''Dataset for dynamically loading exoskeleton input and label data (real/sim).'''
 
     def __init__(self,
                  data_dir: str,
@@ -16,7 +18,10 @@ class RealDataset(Dataset):
                  side: str,
                  participant_masses: Dict[str, float] = {},
                  action_patterns: Optional[List[str]] = None,
-                 device: torch.device = torch.device("cpu")):
+                 device: torch.device = torch.device("cpu"),
+                 input_file_suffix: str = "_exo.csv",
+                 label_file_suffix: str = "_moment_filt.csv",
+                 cache_dir: str = "cache"):
         self.data_dir = data_dir
         self.input_names = input_names
         self.label_names = label_names
@@ -24,6 +29,9 @@ class RealDataset(Dataset):
         self.participant_masses = participant_masses
         self.action_patterns = action_patterns
         self.device = device
+        self.input_file_suffix = input_file_suffix.lower()
+        self.label_file_suffix = label_file_suffix.lower() if label_file_suffix else None
+        self.cache_dir = cache_dir
         self.trial_names = self._get_trial_names()
 
         if self.action_patterns:
@@ -121,8 +129,54 @@ class RealDataset(Dataset):
                 return True
         return False
 
+    def _cache_key(self) -> str:
+        key = json.dumps({
+            "data_dir": self.data_dir,
+            "side": self.side,
+            "action_patterns": self.action_patterns,
+            "input_suffix": self.input_file_suffix,
+        }, sort_keys=True)
+        return hashlib.md5(key.encode()).hexdigest()
+
+    def _load_cached_trials(self) -> Optional[List[str]]:
+        if not self.cache_dir:
+            return None
+        os.makedirs(self.cache_dir, exist_ok=True)
+        cache_path = os.path.join(self.cache_dir, f"trials_{self._cache_key()}.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("data_dir") == self.data_dir:
+                    return data.get("trials", [])
+            except Exception:
+                return None
+        return None
+
+    def _save_cached_trials(self, trials: List[str]) -> None:
+        if not self.cache_dir:
+            return
+        os.makedirs(self.cache_dir, exist_ok=True)
+        cache_path = os.path.join(self.cache_dir, f"trials_{self._cache_key()}.json")
+        payload = {
+            "data_dir": self.data_dir,
+            "trials": trials,
+            "side": self.side,
+            "action_patterns": self.action_patterns,
+        }
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except Exception:
+            pass
+
     def _get_trial_names(self):
         '''Get all trial names in data_dir, filtered by action patterns if specified.'''
+        cached = self._load_cached_trials()
+        if cached is not None:
+            print(f"Loaded cached trial list ({len(cached)} entries) from {self.cache_dir}")
+            return cached
+
         participants = [participant for participant in os.listdir(self.data_dir)
                         if "." not in participant and participant != "LICENSE"]
 
@@ -143,39 +197,34 @@ class RealDataset(Dataset):
         if self.action_patterns and action_stats:
             print(f"  - Action distribution: {action_stats}")
 
+        self._save_cached_trials(trial_names)
         return trial_names
 
     def _load_trial_data_train(self, trial_name: str):
         '''Loads data from a single trial.'''
         trial_dir = os.path.join(self.data_dir, trial_name)
-        input_file_path = None
-        for file in os.listdir(trial_dir):
-            file_lower = file.lower()
-            if file_lower.endswith("exo.csv") and not file_lower.endswith("power_exo.csv"):
-                input_file_path = os.path.join(trial_dir, file)
-                break
-
-        if input_file_path is None:
-            raise FileNotFoundError(f"No file ending with '_exo.csv' found in {trial_dir}")
+        input_file_path = self._find_input_file(trial_dir)
 
         participant = trial_name.split("/")[0].split("\\")[0]
         if participant not in self.participant_masses:
             print(f"Warning - {participant} mass was not provided.")
         input_data = self._load_input_data(input_file_path, body_mass=self.participant_masses.get(participant, 1.))
 
-        label_file_path = None
-        for file in os.listdir(trial_dir):
-            file_lower = file.lower()
-            if file_lower.endswith("_moment_filt.csv"):
-                label_file_path = os.path.join(trial_dir, file)
-                break
-
-        if label_file_path is None:
-            raise FileNotFoundError(f"No file ending with '_moment_filt.csv' found in {trial_dir}")
-
-        label_data = self._load_label_data(label_file_path)
+        label_data = self._load_label_data(trial_dir)
 
         return input_data, label_data
+
+    def _find_input_file(self, trial_dir: str) -> str:
+        for file in os.listdir(trial_dir):
+            file_lower = file.lower()
+            if not file_lower.endswith(self.input_file_suffix):
+                continue
+            if self.input_file_suffix.endswith("_exo.csv") and file_lower.endswith("power_exo.csv"):
+                continue
+            return os.path.join(trial_dir, file)
+        raise FileNotFoundError(
+            f"No file ending with '{self.input_file_suffix}' found in {trial_dir}"
+        )
 
     def _load_input_data(self, file_path: str, body_mass: float):
         '''Loads input data from a single file and returns as a 3D torch.FloatTensor.'''
@@ -199,9 +248,21 @@ class RealDataset(Dataset):
         input_data = torch.tensor(df[self.input_names].values, device=self.device).transpose(0, 1).unsqueeze(0).float()
         return input_data
 
-    def _load_label_data(self, file_path: str):
+    def _load_label_data(self, trial_dir: str):
         '''Loads label data from a single file and returns as a 3D torch.FloatTensor.'''
-        df = pd.read_csv(file_path)
+        if not self.label_file_suffix:
+            raise RuntimeError("label_file_suffix 未设置，无法加载标签数据")
+        label_path = None
+        for file in os.listdir(trial_dir):
+            file_lower = file.lower()
+            if file_lower.endswith(self.label_file_suffix):
+                label_path = os.path.join(trial_dir, file)
+                break
+        if label_path is None:
+            raise FileNotFoundError(
+                f"No file ending with '{self.label_file_suffix}' found in {trial_dir}"
+            )
+        df = pd.read_csv(label_path)
         label_data = torch.tensor(df[self.label_names].values, device=self.device).transpose(0, 1).unsqueeze(0).float()
         return label_data
 
