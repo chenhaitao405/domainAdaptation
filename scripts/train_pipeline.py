@@ -116,23 +116,87 @@ def _build_loader(
     )
 
 
+def _identify_modality(channel_name: str) -> Optional[str]:
+    name = channel_name.lower()
+    if "thigh_imu" in name and "_accel_" in name:
+        return "thigh_accel"
+    if "thigh_imu" in name and "_gyro_" in name:
+        return "thigh_gyro"
+    if "shank_imu" in name and "_accel_" in name:
+        return "shank_accel"
+    if "shank_imu" in name and "_gyro_" in name:
+        return "shank_gyro"
+    return None
+
+
+def _compute_modality_scales(channel_names: Optional[List[str]], variances: Optional[List[float]]) -> Optional[List[float]]:
+    if not channel_names or not variances:
+        return None
+    group_max: Dict[str, float] = {}
+    for name, var in zip(channel_names, variances):
+        group = _identify_modality(name)
+        if group is None:
+            continue
+        current = group_max.get(group, 0.0)
+        if var > current:
+            group_max[group] = var
+    if not group_max:
+        return None
+    scales: List[float] = []
+    for name in channel_names:
+        group = _identify_modality(name)
+        if group and group in group_max:
+            scales.append(max(group_max[group], 1e-6))
+        else:
+            scales.append(1.0)
+    return scales
+
+
+def _aggregate_channel_stats(dataset: Any) -> Tuple[Optional[List[str]], Optional[List[float]]]:
+    components = getattr(dataset, "datasets", None)
+    if components is None:
+        components = [dataset]
+    names: Optional[List[str]] = None
+    total_var: Optional[torch.Tensor] = None
+    total_weight = 0
+    for ds in components:
+        stats = getattr(ds, "channel_stats", None)
+        ds_names = getattr(ds, "input_names", None)
+        if stats is None or ds_names is None:
+            continue
+        if names is None:
+            names = list(ds_names)
+        weight = len(ds)
+        var_tensor = torch.tensor(stats["variance"], dtype=torch.float64)
+        total_var = var_tensor * weight if total_var is None else total_var + var_tensor * weight
+        total_weight += weight
+    if names is None or total_var is None or total_weight == 0:
+        return None, None
+    avg_var = (total_var / total_weight).tolist()
+    return names, avg_var
+
+
 def _prepare_real_dataset(config: DatasetConfig, device: torch.device, max_trials: int | None):
     dataset = DataManager.load_datasets(config, device=device)
+    channel_names, variances = _aggregate_channel_stats(dataset)
+    channel_scales = _compute_modality_scales(channel_names, variances)
     valid_indices = DataManager.get_or_compute_valid_indices(dataset, config)
     if max_trials is not None:
         valid_indices = valid_indices[:max_trials]
     if len(valid_indices) == 0:
         raise RuntimeError("真实域数据过滤后为空，请检查数据配置")
-    return Subset(dataset, valid_indices)
+    return Subset(dataset, valid_indices), channel_scales
 
 
 def _prepare_sim_dataset(config: DatasetConfig, device: torch.device, max_trials: int | None):
     dataset = DataManager.load_sim_datasets(config, device=device)
+    channel_names, variances = _aggregate_channel_stats(dataset)
+    channel_scales = _compute_modality_scales(channel_names, variances)
     if max_trials is not None:
         dataset = Subset(dataset, list(range(min(max_trials, len(dataset)))))
     if len(dataset) == 0:
         raise RuntimeError("模拟域数据为空，请检查数据配置")
-    return dataset
+    return dataset, channel_scales
 
 
 def _next_batch(iterator, loader):
@@ -239,8 +303,8 @@ def main() -> None:
 
     try:
         cpu_device = torch.device("cpu")
-        real_dataset = _prepare_real_dataset(dataset_cfg, cpu_device, args.max_real_trials)
-        sim_dataset = _prepare_sim_dataset(dataset_cfg, cpu_device, args.max_sim_trials)
+        real_dataset, real_scales = _prepare_real_dataset(dataset_cfg, cpu_device, args.max_real_trials)
+        sim_dataset, sim_scales = _prepare_sim_dataset(dataset_cfg, cpu_device, args.max_sim_trials)
 
         real_loader = _build_loader(
             real_dataset,
@@ -271,6 +335,8 @@ def main() -> None:
             identity_loss_weight=args.lambda_identity,
             gan_loss_weight=args.lambda_gan,
             device=args.device,
+            sim_channel_scale=sim_scales,
+            real_channel_scale=real_scales,
         )
         model = DomainAdaptationGAN(gan_config)
 
