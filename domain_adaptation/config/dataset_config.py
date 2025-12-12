@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-import copy
 
 DEFAULT_DATA_DIRS = [
     "/home/num2/datasets/EXO/Phase1And2_Parsed/Parsed",
@@ -36,64 +35,6 @@ DEFAULT_REAL_SENSOR_NAMES = [
     "knee_angle_*",
     "knee_angle_*_velocity_filt",
 ]
-
-# Columns present in *_imu_sim.csv. Split into common (pelvis) and sided sensors.
-_SIM_COMMON = [
-    "pelvis_imu_accel_x",
-    "pelvis_imu_accel_y",
-    "pelvis_imu_accel_z",
-    "pelvis_imu_gyro_x",
-    "pelvis_imu_gyro_y",
-    "pelvis_imu_gyro_z",
-]
-
-_SIM_LEFT = [
-    "thigh_imu_l_accel_x",
-    "thigh_imu_l_accel_y",
-    "thigh_imu_l_accel_z",
-    "thigh_imu_l_gyro_x",
-    "thigh_imu_l_gyro_y",
-    "thigh_imu_l_gyro_z",
-    "shank_imu_l_accel_x",
-    "shank_imu_l_accel_y",
-    "shank_imu_l_accel_z",
-    "shank_imu_l_gyro_x",
-    "shank_imu_l_gyro_y",
-    "shank_imu_l_gyro_z",
-    "foot_imu_l_accel_x",
-    "foot_imu_l_accel_y",
-    "foot_imu_l_accel_z",
-    "foot_imu_l_gyro_x",
-    "foot_imu_l_gyro_y",
-    "foot_imu_l_gyro_z",
-]
-
-_SIM_RIGHT = [
-    "thigh_imu_r_accel_x",
-    "thigh_imu_r_accel_y",
-    "thigh_imu_r_accel_z",
-    "thigh_imu_r_gyro_x",
-    "thigh_imu_r_gyro_y",
-    "thigh_imu_r_gyro_z",
-    "shank_imu_r_accel_x",
-    "shank_imu_r_accel_y",
-    "shank_imu_r_accel_z",
-    "shank_imu_r_gyro_x",
-    "shank_imu_r_gyro_y",
-    "shank_imu_r_gyro_z",
-    "foot_imu_r_accel_x",
-    "foot_imu_r_accel_y",
-    "foot_imu_r_accel_z",
-    "foot_imu_r_gyro_x",
-    "foot_imu_r_gyro_y",
-    "foot_imu_r_gyro_z",
-]
-
-DEFAULT_SIM_SENSOR_NAMES: Dict[str, List[str]] = {
-    "common": _SIM_COMMON,
-    "left": _SIM_LEFT,
-    "right": _SIM_RIGHT,
-}
 
 DEFAULT_LABEL_NAMES = [
     "hip_flexion_*_moment",
@@ -137,10 +78,6 @@ class DatasetConfig:
         default_factory=lambda: list(DEFAULT_REAL_SENSOR_NAMES)
     )
     real_sensor_pick: List[str] = field(default_factory=list)
-    sim_sensor_names: Dict[str, List[str]] = field(
-        default_factory=lambda: copy.deepcopy(DEFAULT_SIM_SENSOR_NAMES)
-    )
-    sim_sensor_pick: Dict[str, List[str]] = field(default_factory=dict)
     label_names: List[str] = field(
         default_factory=lambda: list(DEFAULT_LABEL_NAMES)
     )
@@ -161,20 +98,3 @@ class DatasetConfig:
     def input_names(self) -> List[str]:
         """DataManager 期望的真实传感器列表."""
         return self.real_sensor_pick or self.real_sensor_names
-
-    def get_sim_sensor_columns(self, side: str) -> List[str]:
-        """
-        获取模拟传感器列名。_imu_sim.csv 中不存在力矩列，因此单独配置。
-
-        Args:
-            side: 'l' 或 'r'
-        """
-        if side not in {"l", "r"}:
-            raise ValueError("side 仅支持 'l' 或 'r'")
-        pick = self.sim_sensor_pick.get(side)
-        if pick:
-            return pick
-        base = self.sim_sensor_names.get("common", [])
-        sided = self.sim_sensor_names["left" if side == "l" else "right"]
-        return base + sided
-

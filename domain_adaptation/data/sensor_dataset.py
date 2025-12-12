@@ -6,8 +6,8 @@ import torch
 from torch.utils.data import Dataset
 
 
-class RealDataset(Dataset):
-    '''Dataset for dynamically loading real exoskeleton input and label data.'''
+class SensorDataset(Dataset):
+    '''Dataset for dynamically loading exoskeleton input and label data (real/sim).'''
 
     def __init__(self,
                  data_dir: str,
@@ -16,7 +16,9 @@ class RealDataset(Dataset):
                  side: str,
                  participant_masses: Dict[str, float] = {},
                  action_patterns: Optional[List[str]] = None,
-                 device: torch.device = torch.device("cpu")):
+                 device: torch.device = torch.device("cpu"),
+                 input_file_suffix: str = "_exo.csv",
+                 label_file_suffix: str = "_moment_filt.csv"):
         self.data_dir = data_dir
         self.input_names = input_names
         self.label_names = label_names
@@ -24,6 +26,8 @@ class RealDataset(Dataset):
         self.participant_masses = participant_masses
         self.action_patterns = action_patterns
         self.device = device
+        self.input_file_suffix = input_file_suffix.lower()
+        self.label_file_suffix = label_file_suffix.lower() if label_file_suffix else None
         self.trial_names = self._get_trial_names()
 
         if self.action_patterns:
@@ -148,34 +152,28 @@ class RealDataset(Dataset):
     def _load_trial_data_train(self, trial_name: str):
         '''Loads data from a single trial.'''
         trial_dir = os.path.join(self.data_dir, trial_name)
-        input_file_path = None
-        for file in os.listdir(trial_dir):
-            file_lower = file.lower()
-            if file_lower.endswith("exo.csv") and not file_lower.endswith("power_exo.csv"):
-                input_file_path = os.path.join(trial_dir, file)
-                break
-
-        if input_file_path is None:
-            raise FileNotFoundError(f"No file ending with '_exo.csv' found in {trial_dir}")
+        input_file_path = self._find_input_file(trial_dir)
 
         participant = trial_name.split("/")[0].split("\\")[0]
         if participant not in self.participant_masses:
             print(f"Warning - {participant} mass was not provided.")
         input_data = self._load_input_data(input_file_path, body_mass=self.participant_masses.get(participant, 1.))
 
-        label_file_path = None
-        for file in os.listdir(trial_dir):
-            file_lower = file.lower()
-            if file_lower.endswith("_moment_filt.csv"):
-                label_file_path = os.path.join(trial_dir, file)
-                break
-
-        if label_file_path is None:
-            raise FileNotFoundError(f"No file ending with '_moment_filt.csv' found in {trial_dir}")
-
-        label_data = self._load_label_data(label_file_path)
+        label_data = self._load_label_data(trial_dir)
 
         return input_data, label_data
+
+    def _find_input_file(self, trial_dir: str) -> str:
+        for file in os.listdir(trial_dir):
+            file_lower = file.lower()
+            if not file_lower.endswith(self.input_file_suffix):
+                continue
+            if self.input_file_suffix.endswith("_exo.csv") and file_lower.endswith("power_exo.csv"):
+                continue
+            return os.path.join(trial_dir, file)
+        raise FileNotFoundError(
+            f"No file ending with '{self.input_file_suffix}' found in {trial_dir}"
+        )
 
     def _load_input_data(self, file_path: str, body_mass: float):
         '''Loads input data from a single file and returns as a 3D torch.FloatTensor.'''
@@ -199,9 +197,21 @@ class RealDataset(Dataset):
         input_data = torch.tensor(df[self.input_names].values, device=self.device).transpose(0, 1).unsqueeze(0).float()
         return input_data
 
-    def _load_label_data(self, file_path: str):
+    def _load_label_data(self, trial_dir: str):
         '''Loads label data from a single file and returns as a 3D torch.FloatTensor.'''
-        df = pd.read_csv(file_path)
+        if not self.label_file_suffix:
+            raise RuntimeError("label_file_suffix 未设置，无法加载标签数据")
+        label_path = None
+        for file in os.listdir(trial_dir):
+            file_lower = file.lower()
+            if file_lower.endswith(self.label_file_suffix):
+                label_path = os.path.join(trial_dir, file)
+                break
+        if label_path is None:
+            raise FileNotFoundError(
+                f"No file ending with '{self.label_file_suffix}' found in {trial_dir}"
+            )
+        df = pd.read_csv(label_path)
         label_data = torch.tensor(df[self.label_names].values, device=self.device).transpose(0, 1).unsqueeze(0).float()
         return label_data
 

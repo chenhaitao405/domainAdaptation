@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import sys
+from pathlib import Path
 from functools import partial
 from typing import Dict
 
@@ -11,6 +13,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from domain_adaptation.config import DatasetConfig
 from domain_adaptation.data import DataManager
@@ -155,9 +161,10 @@ def main() -> None:
     if len(real_loader) == 0 or len(sim_loader) == 0:
         raise RuntimeError("DataLoader为空，请适当减小batch_size或检查数据")
 
+    channel_count = len(dataset_cfg.input_names)
     gan_config = GanConfig(
-        sim_channels=len(dataset_cfg.get_sim_sensor_columns(dataset_cfg.side)),
-        real_channels=len(dataset_cfg.input_names),
+        sim_channels=channel_count,
+        real_channels=channel_count,
         sequence_length=args.seq_len,
         base_channels=args.base_channels,
         depth=args.unet_depth,

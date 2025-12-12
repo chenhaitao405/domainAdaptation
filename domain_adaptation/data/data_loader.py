@@ -4,8 +4,7 @@ Unified data loading utilities for training and validation.
 import torch
 from torch.utils.data import DataLoader, ConcatDataset, Subset, random_split
 from typing import List, Tuple, Any, Optional
-from domain_adaptation.data.real_dataset import RealDataset
-from domain_adaptation.data.sim_dataset import SimDataset
+from domain_adaptation.data.sensor_dataset import SensorDataset
 import os
 import json
 import hashlib
@@ -44,7 +43,7 @@ class DataManager:
 
         for data_dir in data_dirs:
             for side in sides:
-                dataset = RealDataset(
+                dataset = SensorDataset(
                     data_dir=data_dir,
                     input_names=[name.replace("*", side) for name in config.input_names],
                     label_names=[name.replace("*", side) for name in config.label_names],
@@ -82,14 +81,16 @@ class DataManager:
 
         for data_dir in data_dirs:
             for side in sides:
-                dataset = SimDataset(
+                dataset = SensorDataset(
                     data_dir=data_dir,
-                    sim_input_names=config.get_sim_sensor_columns(side),
+                    input_names=[name.replace("*", side) for name in config.input_names],
                     label_names=[name.replace("*", side) for name in config.label_names],
                     side=side,
                     participant_masses=config.participant_masses,
                     action_patterns=action_patterns,
-                    device=device
+                    device=device,
+                    input_file_suffix="_exo_sim.csv",
+                    label_file_suffix="_moment_filt_bio.csv",
                 )
                 datasets.append(dataset)
                 print(f"  - Loaded {len(dataset)} sim trials from {data_dir} (side: {side})")
