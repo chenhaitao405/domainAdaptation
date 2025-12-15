@@ -252,12 +252,29 @@ class SensorDataset(Dataset):
         var = torch.clamp(sum_sq / count - mean ** 2, min=1e-6)
         std = torch.sqrt(var)
 
+        norm_sum_sq = torch.zeros(channel_count)
+        norm_count = torch.zeros(channel_count)
+        mean_vec = mean.view(-1, 1)
+        std_vec = torch.clamp(std, min=1e-6).view(-1, 1)
+
+        for trial in self.trial_names:
+            inputs, _ = self._load_trial_data_train(trial)
+            data = inputs.squeeze(0).cpu()  # (C, T)
+            mask = torch.isfinite(data)
+            safe_data = torch.where(mask, data, mean_vec.expand_as(data))
+            normalized = (safe_data - mean_vec) / std_vec
+            norm_sum_sq += ((normalized ** 2) * mask.float()).sum(dim=1)
+            norm_count += mask.sum(dim=1)
+
+        norm_count = torch.clamp(norm_count, min=1.0)
+        norm_var = torch.clamp(norm_sum_sq / norm_count, min=1e-6)
+
         stats = {
             "input_names": self.input_names,
             "mean": mean.tolist(),
             "variance": var.tolist(),
             "std": std.tolist(),
-            "norm_variance": (var / torch.clamp(std ** 2, min=1e-6)).tolist(),
+            "norm_variance": norm_var.tolist(),
         }
         if cache_path:
             try:

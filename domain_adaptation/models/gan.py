@@ -174,8 +174,8 @@ class GanConfig:
     gan_loss_weight: float = 1.0
     betas: Tuple[float, float] = (0.5, 0.999)
     device: str = "cuda"
-    sim_channel_scale: Optional[List[float]] = None
-    real_channel_scale: Optional[List[float]] = None
+    sim_sigma_max: Optional[List[float]] = None
+    real_sigma_max: Optional[List[float]] = None
 
 
 class Sim2RealTranslator(UNet1D):
@@ -221,8 +221,8 @@ class DomainAdaptationGAN(nn.Module):
         self.disc_sim = PatchDiscriminator1D(config.sim_channels, config.base_channels)
 
         self.to(device)
-        self.real_scale = self._prepare_scale_tensor(config.real_channel_scale, config.real_channels)
-        self.sim_scale = self._prepare_scale_tensor(config.sim_channel_scale, config.sim_channels)
+        self.real_sigma = self._prepare_sigma_tensor(config.real_sigma_max, config.real_channels)
+        self.sim_sigma = self._prepare_sigma_tensor(config.sim_sigma_max, config.sim_channels)
 
         gen_params = list(self.sim2real.parameters()) + list(self.real2sim.parameters())
         disc_params = list(self.disc_real.parameters()) + list(self.disc_sim.parameters())
@@ -237,18 +237,18 @@ class DomainAdaptationGAN(nn.Module):
             betas=config.betas,
         )
 
-    def _prepare_scale_tensor(self, values: Optional[List[float]], channels: int) -> Optional[torch.Tensor]:
+    def _prepare_sigma_tensor(self, values: Optional[List[float]], channels: int) -> Optional[torch.Tensor]:
         if values is None:
             return None
         if len(values) != channels:
-            raise ValueError("channel scale长度与通道数不匹配")
+            raise ValueError("sigma_max长度与通道数不匹配")
         tensor = torch.tensor(values, dtype=torch.float32, device=self.device)
         tensor = torch.clamp(tensor, min=1e-6)
         return tensor.view(1, channels, 1)
 
     def _normalized_mse(self, prediction: torch.Tensor, target: torch.Tensor, domain: str) -> torch.Tensor:
         diff = prediction - target
-        scale = self.real_scale if domain == "real" else self.sim_scale
+        scale = self.real_sigma if domain == "real" else self.sim_sigma
         if scale is None:
             return (diff ** 2).mean()
         return (((diff ** 2) / scale).mean())*0.5

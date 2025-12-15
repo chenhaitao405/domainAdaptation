@@ -165,7 +165,7 @@ def _compute_modality_scales(channel_names: Optional[List[str]], variances: Opti
     return scales
 
 
-def _aggregate_channel_stats(dataset: Any) -> Tuple[Optional[List[str]], Optional[List[float]]]:
+def _aggregate_channel_stats(dataset: Any, use_norm: bool = True) -> Tuple[Optional[List[str]], Optional[List[float]]]:
     components = getattr(dataset, "datasets", None)
     if components is None:
         components = [dataset]
@@ -180,7 +180,8 @@ def _aggregate_channel_stats(dataset: Any) -> Tuple[Optional[List[str]], Optiona
         if names is None:
             names = list(ds_names)
         weight = len(ds)
-        var_values = stats.get("norm_variance", stats.get("variance"))
+        key = "norm_variance" if use_norm else "variance"
+        var_values = stats.get(key)
         if var_values is None:
             continue
         var_tensor = torch.tensor(var_values, dtype=torch.float64)
@@ -194,7 +195,7 @@ def _aggregate_channel_stats(dataset: Any) -> Tuple[Optional[List[str]], Optiona
 
 def _prepare_real_dataset(config: DatasetConfig, device: torch.device, max_trials: int | None):
     dataset = DataManager.load_datasets(config, device=device)
-    channel_names, variances = _aggregate_channel_stats(dataset)
+    channel_names, variances = _aggregate_channel_stats(dataset, use_norm=False)
     channel_scales = _compute_modality_scales(channel_names, variances)
     valid_indices = DataManager.get_or_compute_valid_indices(dataset, config)
     if max_trials is not None:
@@ -206,7 +207,7 @@ def _prepare_real_dataset(config: DatasetConfig, device: torch.device, max_trial
 
 def _prepare_sim_dataset(config: DatasetConfig, device: torch.device, max_trials: int | None):
     dataset = DataManager.load_sim_datasets(config, device=device)
-    channel_names, variances = _aggregate_channel_stats(dataset)
+    channel_names, variances = _aggregate_channel_stats(dataset, use_norm=False)
     channel_scales = _compute_modality_scales(channel_names, variances)
     if max_trials is not None:
         dataset = Subset(dataset, list(range(min(max_trials, len(dataset)))))
@@ -319,8 +320,8 @@ def main() -> None:
 
     try:
         cpu_device = torch.device("cpu")
-        real_dataset, real_scales = _prepare_real_dataset(dataset_cfg, cpu_device, args.max_real_trials)
-        sim_dataset, sim_scales = _prepare_sim_dataset(dataset_cfg, cpu_device, args.max_sim_trials)
+        real_dataset, real_sigma = _prepare_real_dataset(dataset_cfg, cpu_device, args.max_real_trials)
+        sim_dataset, sim_sigma = _prepare_sim_dataset(dataset_cfg, cpu_device, args.max_sim_trials)
 
         real_loader = _build_loader(
             real_dataset,
@@ -351,8 +352,8 @@ def main() -> None:
             identity_loss_weight=args.lambda_identity,
             gan_loss_weight=args.lambda_gan,
             device=args.device,
-            sim_channel_scale=sim_scales,
-            real_channel_scale=real_scales,
+            sim_sigma_max=sim_sigma,
+            real_sigma_max=real_sigma,
         )
         model = DomainAdaptationGAN(gan_config)
 
