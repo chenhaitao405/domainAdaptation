@@ -167,10 +167,10 @@ class GanConfig:
     sequence_length: int = 256
     base_channels: int = 64
     depth: int = 4
-    gen_learning_rate: float = 5e-4
-    disc_learning_rate: float = 5e-4
+    gen_learning_rate: float = 1e-3
+    disc_learning_rate: float = 1e-3
     cycle_loss_weight: float = 0.9
-    identity_loss_weight: float = 0.3
+    identity_loss_weight: float = 1.86
     gan_loss_weight: float = 1.0
     betas: Tuple[float, float] = (0.5, 0.999)
     device: str = "cuda"
@@ -251,7 +251,7 @@ class DomainAdaptationGAN(nn.Module):
         scale = self.real_scale if domain == "real" else self.sim_scale
         if scale is None:
             return (diff ** 2).mean()
-        return ((diff ** 2) / scale).mean()
+        return (((diff ** 2) / scale).mean())*0.5
 
     def set_requires_grad(self, modules: Iterable[nn.Module], flag: bool) -> None:
         for module in modules:
@@ -266,7 +266,7 @@ class DomainAdaptationGAN(nn.Module):
 
         adv_real = torch.mean((self.disc_real(fake_real) - 1) ** 2)
         adv_sim = torch.mean((self.disc_sim(fake_sim) - 1) ** 2)
-        adv_loss = adv_real + adv_sim
+        adv_loss = (adv_real + adv_sim)*0.5
 
         cycle_sim = self.real2sim(fake_real)
         cycle_real = self.sim2real(fake_sim)
@@ -283,7 +283,7 @@ class DomainAdaptationGAN(nn.Module):
             identity_loss = identity_loss + self._normalized_mse(
                 self.real2sim(sim_inputs), sim_inputs, "sim"
             )
-
+        identity_loss = identity_loss*0.5
         total_loss = (
             self.config.gan_loss_weight * adv_loss
             + self.config.cycle_loss_weight * cycle_loss

@@ -21,7 +21,8 @@ class SensorDataset(Dataset):
                  device: torch.device = torch.device("cpu"),
                  input_file_suffix: str = "_exo.csv",
                  label_file_suffix: str = "_moment_filt.csv",
-                 cache_dir: str = "cache"):
+                 cache_dir: str = "cache",
+                 normalize_inputs: bool = True):
         self.data_dir = data_dir
         self.input_names = input_names
         self.label_names = label_names
@@ -32,8 +33,13 @@ class SensorDataset(Dataset):
         self.input_file_suffix = input_file_suffix.lower()
         self.label_file_suffix = label_file_suffix.lower() if label_file_suffix else None
         self.cache_dir = cache_dir
+        self.normalize_inputs = normalize_inputs
         self.trial_names = self._get_trial_names()
         self.channel_stats = self._get_or_compute_channel_stats()
+        self._mean_tensor = torch.tensor(self.channel_stats["mean"], dtype=torch.float32, device=self.device).view(1, -1, 1)
+        std = torch.tensor(self.channel_stats["std"], dtype=torch.float32, device=self.device)
+        std = torch.clamp(std, min=1e-6)
+        self._std_tensor = std.view(1, -1, 1)
 
         if self.action_patterns:
             print(f"  - Action patterns: {self.action_patterns}")
@@ -61,6 +67,8 @@ class SensorDataset(Dataset):
         # concatenate tensors
         input_data, label_data = zip(*data)
         input_data = torch.cat(input_data, dim=0)
+        if self.normalize_inputs:
+            input_data = (input_data - self._mean_tensor) / self._std_tensor
         label_data = torch.cat(label_data, dim=0)
 
         # Return trial names along with data
@@ -249,6 +257,7 @@ class SensorDataset(Dataset):
             "mean": mean.tolist(),
             "variance": var.tolist(),
             "std": std.tolist(),
+            "norm_variance": (var / torch.clamp(std ** 2, min=1e-6)).tolist(),
         }
         if cache_path:
             try:
@@ -261,6 +270,9 @@ class SensorDataset(Dataset):
     @property
     def channel_std(self) -> List[float]:
         return self.channel_stats["std"]
+    @property
+    def channel_variance(self) -> List[float]:
+        return self.channel_stats.get("norm_variance", self.channel_stats["variance"])
 
     def get_channel_std_tensor(self, device: Optional[torch.device] = None) -> torch.Tensor:
         device = device or self.device

@@ -180,7 +180,10 @@ def _aggregate_channel_stats(dataset: Any) -> Tuple[Optional[List[str]], Optiona
         if names is None:
             names = list(ds_names)
         weight = len(ds)
-        var_tensor = torch.tensor(stats["variance"], dtype=torch.float64)
+        var_values = stats.get("norm_variance", stats.get("variance"))
+        if var_values is None:
+            continue
+        var_tensor = torch.tensor(var_values, dtype=torch.float64)
         total_var = var_tensor * weight if total_var is None else total_var + var_tensor * weight
         total_weight += weight
     if names is None or total_var is None or total_weight == 0:
@@ -232,10 +235,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seq-len", type=int, default=2560, help="裁剪窗口长度")
     parser.add_argument("--base-channels", type=int, default=64, help="U-Net初始通道数")
     parser.add_argument("--unet-depth", type=int, default=4, help="U-Net下采样深度")
-    parser.add_argument("--gen-lr", type=float, default=5e-4)
-    parser.add_argument("--disc-lr", type=float, default=5e-4)
+    parser.add_argument("--gen-lr", type=float, default=1e-3)
+    parser.add_argument("--disc-lr", type=float, default=1e-3)
     parser.add_argument("--lambda-cycle", type=float, default=0.9)
-    parser.add_argument("--lambda-identity", type=float, default=0.3)
+    parser.add_argument("--lambda-identity", type=float, default=1.86)
     parser.add_argument("--lambda-gan", type=float, default=1.0)
     parser.add_argument("--device", type=str, default="cuda", help="训练设备，例如 cuda 或 cpu")
     parser.add_argument("--num-workers", type=int, default=4)
