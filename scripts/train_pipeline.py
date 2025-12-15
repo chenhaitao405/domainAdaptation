@@ -129,6 +129,19 @@ def _identify_modality(channel_name: str) -> Optional[str]:
     return None
 
 
+def _identify_modality(channel_name: str) -> Optional[str]:
+    name = channel_name.lower()
+    if "thigh_imu" in name and "_accel_" in name:
+        return "thigh_accel"
+    if "thigh_imu" in name and "_gyro_" in name:
+        return "thigh_gyro"
+    if "shank_imu" in name and "_accel_" in name:
+        return "shank_accel"
+    if "shank_imu" in name and "_gyro_" in name:
+        return "shank_gyro"
+    return None
+
+
 def _compute_modality_scales(channel_names: Optional[List[str]], variances: Optional[List[float]]) -> Optional[List[float]]:
     if not channel_names or not variances:
         return None

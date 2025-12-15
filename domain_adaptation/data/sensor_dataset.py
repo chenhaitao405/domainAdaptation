@@ -33,6 +33,7 @@ class SensorDataset(Dataset):
         self.label_file_suffix = label_file_suffix.lower() if label_file_suffix else None
         self.cache_dir = cache_dir
         self.trial_names = self._get_trial_names()
+        self.channel_stats = self._get_or_compute_channel_stats()
 
         if self.action_patterns:
             print(f"  - Action patterns: {self.action_patterns}")
@@ -199,6 +200,72 @@ class SensorDataset(Dataset):
 
         self._save_cached_trials(trial_names)
         return trial_names
+
+    def _channel_stats_cache_path(self) -> Optional[str]:
+        if not self.cache_dir:
+            return None
+        os.makedirs(self.cache_dir, exist_ok=True)
+        key = json.dumps({
+            "data_dir": self.data_dir,
+            "side": self.side,
+            "inputs": self.input_names,
+            "input_suffix": self.input_file_suffix,
+        }, sort_keys=True)
+        cache_hash = hashlib.md5(key.encode()).hexdigest()
+        return os.path.join(self.cache_dir, f"channel_stats_{cache_hash}.json")
+
+    def _get_or_compute_channel_stats(self) -> Dict[str, List[float]]:
+        cache_path = self._channel_stats_cache_path()
+        if cache_path and os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("input_names") == self.input_names:
+                    return data
+            except Exception:
+                pass
+
+        channel_count = len(self.input_names)
+        sum_vec = torch.zeros(channel_count)
+        sum_sq = torch.zeros(channel_count)
+        count = torch.zeros(channel_count)
+
+        for trial in self.trial_names:
+            inputs, _ = self._load_trial_data_train(trial)
+            data = inputs.squeeze(0)  # (C, T)
+            mask = torch.isfinite(data)
+            safe_data = torch.where(mask, data, torch.zeros_like(data))
+            sum_vec += safe_data.sum(dim=1)
+            sum_sq += (safe_data ** 2).sum(dim=1)
+            count += mask.sum(dim=1)
+
+        count = torch.clamp(count, min=1.0)
+        mean = sum_vec / count
+        var = torch.clamp(sum_sq / count - mean ** 2, min=1e-6)
+        std = torch.sqrt(var)
+
+        stats = {
+            "input_names": self.input_names,
+            "mean": mean.tolist(),
+            "variance": var.tolist(),
+            "std": std.tolist(),
+        }
+        if cache_path:
+            try:
+                with open(cache_path, "w", encoding="utf-8") as f:
+                    json.dump(stats, f, ensure_ascii=False)
+            except Exception:
+                pass
+        return stats
+
+    @property
+    def channel_std(self) -> List[float]:
+        return self.channel_stats["std"]
+
+    def get_channel_std_tensor(self, device: Optional[torch.device] = None) -> torch.Tensor:
+        device = device or self.device
+        tensor = torch.tensor(self.channel_std, dtype=torch.float32, device=device)
+        return tensor.view(1, -1, 1)
 
     def _load_trial_data_train(self, trial_name: str):
         '''Loads data from a single trial.'''
