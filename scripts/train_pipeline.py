@@ -142,27 +142,29 @@ def _identify_modality(channel_name: str) -> Optional[str]:
     return None
 
 
-def _compute_modality_scales(channel_names: Optional[List[str]], variances: Optional[List[float]]) -> Optional[List[float]]:
+def _compute_modality_weights(channel_names: Optional[List[str]], variances: Optional[List[float]]) -> Optional[List[float]]:
     if not channel_names or not variances:
         return None
+    name_to_var = {name: max(var, 1e-6) for name, var in zip(channel_names, variances)}
     group_max: Dict[str, float] = {}
     for name, var in zip(channel_names, variances):
         group = _identify_modality(name)
         if group is None:
             continue
-        current = group_max.get(group, 0.0)
-        if var > current:
-            group_max[group] = var
+        value = max(var, 1e-6)
+        group_max[group] = max(group_max.get(group, 0.0), value)
     if not group_max:
         return None
-    scales: List[float] = []
+    weights: List[float] = []
     for name in channel_names:
         group = _identify_modality(name)
         if group and group in group_max:
-            scales.append(max(group_max[group], 1e-6))
+            max_var = max(group_max[group], 1e-6)
+            channel_var = name_to_var[name]
+            weights.append(min(channel_var / max_var, 1.0))
         else:
-            scales.append(1.0)
-    return scales
+            weights.append(1.0)
+    return weights
 
 
 def _aggregate_channel_stats(dataset: Any, use_norm: bool = True) -> Tuple[Optional[List[str]], Optional[List[float]]]:
@@ -196,24 +198,24 @@ def _aggregate_channel_stats(dataset: Any, use_norm: bool = True) -> Tuple[Optio
 def _prepare_real_dataset(config: DatasetConfig, device: torch.device, max_trials: int | None):
     dataset = DataManager.load_datasets(config, device=device)
     channel_names, variances = _aggregate_channel_stats(dataset, use_norm=False)
-    channel_scales = _compute_modality_scales(channel_names, variances)
+    channel_weights = _compute_modality_weights(channel_names, variances)
     valid_indices = DataManager.get_or_compute_valid_indices(dataset, config)
     if max_trials is not None:
         valid_indices = valid_indices[:max_trials]
     if len(valid_indices) == 0:
         raise RuntimeError("真实域数据过滤后为空，请检查数据配置")
-    return Subset(dataset, valid_indices), channel_scales
+    return Subset(dataset, valid_indices), channel_weights
 
 
 def _prepare_sim_dataset(config: DatasetConfig, device: torch.device, max_trials: int | None):
     dataset = DataManager.load_sim_datasets(config, device=device)
     channel_names, variances = _aggregate_channel_stats(dataset, use_norm=False)
-    channel_scales = _compute_modality_scales(channel_names, variances)
+    channel_weights = _compute_modality_weights(channel_names, variances)
     if max_trials is not None:
         dataset = Subset(dataset, list(range(min(max_trials, len(dataset)))))
     if len(dataset) == 0:
         raise RuntimeError("模拟域数据为空，请检查数据配置")
-    return dataset, channel_scales
+    return dataset, channel_weights
 
 
 def _next_batch(iterator, loader):
@@ -320,8 +322,8 @@ def main() -> None:
 
     try:
         cpu_device = torch.device("cpu")
-        real_dataset, real_sigma = _prepare_real_dataset(dataset_cfg, cpu_device, args.max_real_trials)
-        sim_dataset, sim_sigma = _prepare_sim_dataset(dataset_cfg, cpu_device, args.max_sim_trials)
+        real_dataset, real_weights = _prepare_real_dataset(dataset_cfg, cpu_device, args.max_real_trials)
+        sim_dataset, sim_weights = _prepare_sim_dataset(dataset_cfg, cpu_device, args.max_sim_trials)
 
         real_loader = _build_loader(
             real_dataset,
@@ -352,8 +354,8 @@ def main() -> None:
             identity_loss_weight=args.lambda_identity,
             gan_loss_weight=args.lambda_gan,
             device=args.device,
-            sim_sigma_max=sim_sigma,
-            real_sigma_max=real_sigma,
+            sim_modal_weights=sim_weights,
+            real_modal_weights=real_weights,
         )
         model = DomainAdaptationGAN(gan_config)
 

@@ -163,8 +163,8 @@ class GanConfig:
     gan_loss_weight: float = 1.0
     betas: Tuple[float, float] = (0.5, 0.999)
     device: str = "cuda"
-    sim_sigma_max: Optional[List[float]] = None
-    real_sigma_max: Optional[List[float]] = None
+    sim_modal_weights: Optional[List[float]] = None
+    real_modal_weights: Optional[List[float]] = None
 
 
 class Sim2RealTranslator(UNet1D):
@@ -210,8 +210,8 @@ class DomainAdaptationGAN(nn.Module):
         self.disc_sim = PatchDiscriminator1D(config.sim_channels, config.base_channels)
 
         self.to(device)
-        self.real_sigma = self._prepare_sigma_tensor(config.real_sigma_max, config.real_channels)
-        self.sim_sigma = self._prepare_sigma_tensor(config.sim_sigma_max, config.sim_channels)
+        self.real_weights = self._prepare_weight_tensor(config.real_modal_weights, config.real_channels)
+        self.sim_weights = self._prepare_weight_tensor(config.sim_modal_weights, config.sim_channels)
 
         gen_params = list(self.sim2real.parameters()) + list(self.real2sim.parameters())
         disc_params = list(self.disc_real.parameters()) + list(self.disc_sim.parameters())
@@ -226,21 +226,22 @@ class DomainAdaptationGAN(nn.Module):
             betas=config.betas,
         )
 
-    def _prepare_sigma_tensor(self, values: Optional[List[float]], channels: int) -> Optional[torch.Tensor]:
+    def _prepare_weight_tensor(self, values: Optional[List[float]], channels: int) -> Optional[torch.Tensor]:
         if values is None:
             return None
         if len(values) != channels:
-            raise ValueError("sigma_max长度与通道数不匹配")
+            raise ValueError("modal weight长度与通道数不匹配")
         tensor = torch.tensor(values, dtype=torch.float32, device=self.device)
-        tensor = torch.clamp(tensor, min=1e-6)
+        tensor = torch.clamp(tensor, min=1e-3)
         return tensor.view(1, channels, 1)
 
     def _normalized_mse(self, prediction: torch.Tensor, target: torch.Tensor, domain: str) -> torch.Tensor:
         diff = prediction - target
-        scale = self.real_sigma if domain == "real" else self.sim_sigma
-        if scale is None:
-            return (diff ** 2).mean()
-        return (((diff ** 2) / scale).mean())*0.5
+        weights = self.real_weights if domain == "real" else self.sim_weights
+        loss = diff ** 2
+        if weights is not None:
+            loss = loss * weights
+        return loss.mean()
 
     def set_requires_grad(self, modules: Iterable[nn.Module], flag: bool) -> None:
         for module in modules:
