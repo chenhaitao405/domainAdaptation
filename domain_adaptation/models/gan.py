@@ -14,32 +14,28 @@ def _make_padding(kernel_size: int) -> int:
 
 
 class ConvBlock1D(nn.Module):
-    """一维卷积 + InstanceNorm + 激活的组合。"""
+    """一维卷积 + ReLU 的双卷积块。"""
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         kernel_size: int = 5,
-        activation: nn.Module | None = None,
     ) -> None:
         super().__init__()
         padding = _make_padding(kernel_size)
-        self.net = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding),
-            nn.InstanceNorm1d(out_channels),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding),
-            nn.InstanceNorm1d(out_channels),
-            activation or nn.LeakyReLU(0.2, inplace=True),
-        )
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding)
+        self.activation = nn.ReLU(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        x = self.activation(self.conv1(x))
+        x = self.activation(self.conv2(x))
+        return x
 
 
 class UpBlock1D(nn.Module):
-    """上采样 + 拼接跳连后的卷积块。"""
+    """线性上采样 + 拼接跳连后的双卷积块。"""
 
     def __init__(
         self,
@@ -50,24 +46,21 @@ class UpBlock1D(nn.Module):
     ) -> None:
         super().__init__()
         padding = _make_padding(kernel_size)
-        self.conv = nn.Sequential(
-            nn.Conv1d(
-                in_channels + skip_channels,
-                out_channels,
-                kernel_size,
-                padding=padding,
-            ),
-            nn.InstanceNorm1d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding),
-            nn.InstanceNorm1d(out_channels),
-            nn.ReLU(inplace=True),
+        self.conv1 = nn.Conv1d(
+            in_channels + skip_channels,
+            out_channels,
+            kernel_size,
+            padding=padding,
         )
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding)
+        self.activation = nn.ReLU(inplace=True)
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         x = F.interpolate(x, size=skip.shape[-1], mode="linear", align_corners=False)
         x = torch.cat([x, skip], dim=1)
-        return self.conv(x)
+        x = self.activation(self.conv1(x))
+        x = self.activation(self.conv2(x))
+        return x
 
 
 class UNet1D(nn.Module):
@@ -84,22 +77,17 @@ class UNet1D(nn.Module):
         super().__init__()
         self.depth = depth
         downs: list[nn.Module] = []
-        pools: list[nn.Module] = []
         in_ch = in_channels
         for i in range(depth):
             out_ch = base_channels * (2**i)
             downs.append(ConvBlock1D(in_ch, out_ch, kernel_size))
-            if i != depth - 1:
-                pools.append(nn.AvgPool1d(kernel_size=2, stride=2, ceil_mode=True))
             in_ch = out_ch
         self.down_blocks = nn.ModuleList(downs)
-        self.pool_layers = nn.ModuleList(pools)
 
         self.bottleneck = ConvBlock1D(
             in_ch,
             in_ch * 2,
             kernel_size=kernel_size,
-            activation=nn.ReLU(inplace=True),
         )
         bottleneck_out = in_ch * 2
 
@@ -109,7 +97,7 @@ class UNet1D(nn.Module):
             ups.append(UpBlock1D(bottleneck_out, skip_ch, skip_ch, kernel_size))
             bottleneck_out = skip_ch
         self.up_blocks = nn.ModuleList(ups)
-
+        self.final_dropout = nn.Dropout(p=0.5)
         self.final_conv = nn.Conv1d(bottleneck_out, out_channels, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -117,11 +105,12 @@ class UNet1D(nn.Module):
         for i, block in enumerate(self.down_blocks):
             x = block(x)
             skips.append(x)
-            if i < len(self.pool_layers):
-                x = self.pool_layers[i](x)
+            if i < self.depth - 1:
+                x = F.max_pool1d(x, kernel_size=2, stride=2)
         x = self.bottleneck(x)
         for block, skip in zip(self.up_blocks, reversed(skips)):
             x = block(x, skip)
+        x = self.final_dropout(x)
         return torch.tanh(self.final_conv(x))
 
 
