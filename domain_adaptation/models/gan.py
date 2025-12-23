@@ -1,12 +1,24 @@
 """无监督域翻译GAN（CycleGAN变体）实现."""
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple, List, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+TCN_ROOT = PROJECT_DIR.parent / "TCN"
+if TCN_ROOT.exists() and str(TCN_ROOT) not in sys.path:
+    sys.path.append(str(TCN_ROOT))
+
+try:
+    from utils.tcn import TCN
+except ImportError:
+    TCN = None
 
 
 def _make_padding(kernel_size: int) -> int:
@@ -153,6 +165,7 @@ class GanConfig:
 
     sim_channels: int
     real_channels: int
+    label_channels: int = 0
     sequence_length: int = 256
     base_channels: int = 64
     depth: int = 4
@@ -165,6 +178,15 @@ class GanConfig:
     device: str = "cuda"
     sim_modal_weights: Optional[List[float]] = None
     real_modal_weights: Optional[List[float]] = None
+    lambda_moment: float = 0.0
+    moment_start_epoch: int = 20
+    tcn_num_channels: Tuple[int, ...] = (64, 64, 64, 64)
+    tcn_kernel_size: int = 5
+    tcn_dropout: float = 0.2
+    tcn_learning_rate: float = 1e-3
+    tcn_eff_hist: int = 248
+    tcn_load_path: Optional[str] = None
+    tcn_freeze: bool = False
 
 
 class Sim2RealTranslator(UNet1D):
@@ -212,6 +234,11 @@ class DomainAdaptationGAN(nn.Module):
         self.to(device)
         self.real_weights = self._prepare_weight_tensor(config.real_modal_weights, config.real_channels)
         self.sim_weights = self._prepare_weight_tensor(config.sim_modal_weights, config.sim_channels)
+        self.current_epoch = 0
+        self.tcn_freeze = config.tcn_freeze
+        self.moment_estimator: Optional[TCN] = None
+        self.moment_optimizer: Optional[torch.optim.Optimizer] = None
+        self._init_moment_estimator()
 
         gen_params = list(self.sim2real.parameters()) + list(self.real2sim.parameters())
         disc_params = list(self.disc_real.parameters()) + list(self.disc_sim.parameters())
@@ -225,6 +252,12 @@ class DomainAdaptationGAN(nn.Module):
             lr=config.disc_learning_rate,
             betas=config.betas,
         )
+        if self.moment_estimator is not None and not config.tcn_freeze:
+            self.moment_optimizer = torch.optim.Adam(
+                self.moment_estimator.parameters(),
+                lr=config.tcn_learning_rate,
+                betas=config.betas,
+            )
 
     def _prepare_weight_tensor(self, values: Optional[List[float]], channels: int) -> Optional[torch.Tensor]:
         if values is None:
@@ -243,13 +276,97 @@ class DomainAdaptationGAN(nn.Module):
             loss = loss * weights
         return loss.mean()
 
+    def _init_moment_estimator(self) -> None:
+        if self.config.lambda_moment <= 0 or self.config.label_channels == 0:
+            return
+        if TCN is None:
+            raise ImportError("未找到TCN模块，无法构建力矩估计器")
+        estimator = TCN(
+            input_size=self.config.real_channels,
+            output_size=self.config.label_channels,
+            num_channels=list(self.config.tcn_num_channels),
+            ksize=self.config.tcn_kernel_size,
+            dropout=self.config.tcn_dropout,
+            eff_hist=self.config.tcn_eff_hist,
+            spatial_dropout=False,
+            activation="ReLU",
+            norm="weight_norm",
+            center=0.0,
+            scale=1.0,
+        )
+        if self.config.tcn_load_path:
+            state = torch.load(self.config.tcn_load_path, map_location=self.device)
+            state_dict = state.get("state_dict", state)
+            estimator.load_state_dict(state_dict, strict=False)
+        estimator = estimator.to(self.device)
+        if self.config.tcn_freeze:
+            for param in estimator.parameters():
+                param.requires_grad = False
+        self.moment_estimator = estimator
+
+    def set_current_epoch(self, epoch: int) -> None:
+        self.current_epoch = epoch
+
+    def _should_use_moment_loss(self, sim_labels: Optional[torch.Tensor]) -> bool:
+        return (
+            self.config.lambda_moment > 0
+            and self.moment_estimator is not None
+            and sim_labels is not None
+            and self.current_epoch >= self.config.moment_start_epoch
+        )
+
+    def _tcn_model_info(self) -> Optional[Dict[str, Any]]:
+        if self.moment_estimator is None:
+            return None
+        center = torch.zeros(1, self.config.real_channels, 1, dtype=torch.float32)
+        scale = torch.ones(1, self.config.real_channels, 1, dtype=torch.float32)
+        return {
+            "input_size": self.config.real_channels,
+            "output_size": self.config.label_channels,
+            "num_channels": list(self.config.tcn_num_channels),
+            "ksize": self.config.tcn_kernel_size,
+            "dropout": self.config.tcn_dropout,
+            "eff_hist": self.config.tcn_eff_hist,
+            "spatial_dropout": False,
+            "activation": "ReLU",
+            "norm": "weight_norm",
+            "center": center,
+            "scale": scale,
+        }
+
+    def _build_tcn_checkpoint(self, epoch: int, loss: Optional[float]):
+        if self.moment_estimator is None:
+            return None
+        model_info = self._tcn_model_info()
+        if model_info is None:
+            return None
+        checkpoint = {
+            "epoch": epoch,
+            "state_dict": self.moment_estimator.state_dict(),
+            "optimizer_state_dict": (
+                self.moment_optimizer.state_dict() if self.moment_optimizer is not None else None
+            ),
+            "loss": loss,
+        }
+        checkpoint.update(model_info)
+        return checkpoint
+
+    def save_tcn_checkpoint(self, path: str, epoch: int, loss: Optional[float]) -> None:
+        checkpoint = self._build_tcn_checkpoint(epoch, loss)
+        if checkpoint is None:
+            return
+        torch.save(checkpoint, path)
+
     def set_requires_grad(self, modules: Iterable[nn.Module], flag: bool) -> None:
         for module in modules:
             for param in module.parameters():
                 param.requires_grad = flag
 
     def _generator_losses(
-        self, real_inputs: torch.Tensor, sim_inputs: torch.Tensor
+        self,
+        real_inputs: torch.Tensor,
+        sim_inputs: torch.Tensor,
+        sim_labels: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         fake_real = self.sim2real(sim_inputs)
         fake_sim = self.real2sim(real_inputs)
@@ -274,15 +391,26 @@ class DomainAdaptationGAN(nn.Module):
                 self.real2sim(sim_inputs), sim_inputs, "sim"
             )
         identity_loss = identity_loss*0.5
+        moment_loss = torch.tensor(0.0, device=self.device)
+        if self._should_use_moment_loss(sim_labels):
+            if not self.tcn_freeze:
+                self.moment_estimator.train()
+            else:
+                self.moment_estimator.eval()
+            target = sim_labels.to(self.device)
+            moment_pred = self.moment_estimator(fake_real)
+            moment_loss = F.mse_loss(moment_pred, target)
         total_loss = (
             self.config.gan_loss_weight * adv_loss
             + self.config.cycle_loss_weight * cycle_loss
             + self.config.identity_loss_weight * identity_loss
+            + self.config.lambda_moment * moment_loss
         )
         metrics = {
             "adv_loss": adv_loss.detach(),
             "cycle_loss": cycle_loss.detach(),
             "identity_loss": identity_loss.detach(),
+            "moment_loss": moment_loss.detach(),
             "gen_total": total_loss.detach(),
         }
         return total_loss, metrics
@@ -300,12 +428,17 @@ class DomainAdaptationGAN(nn.Module):
         """执行一次生成器 + 判别器的优化."""
         real_inputs: torch.Tensor = batch["real"].to(self.device)
         sim_inputs: torch.Tensor = batch["sim"].to(self.device)
-
+        sim_labels: Optional[torch.Tensor] = batch.get("sim_labels")
+        use_moment = self._should_use_moment_loss(sim_labels)
         self.set_requires_grad([self.disc_real, self.disc_sim], False)
+        if use_moment and self.moment_optimizer is not None:
+            self.moment_optimizer.zero_grad()
         self.gen_optimizer.zero_grad()
-        gen_loss, gen_metrics = self._generator_losses(real_inputs, sim_inputs)
+        gen_loss, gen_metrics = self._generator_losses(real_inputs, sim_inputs, sim_labels)
         gen_loss.backward()
         self.gen_optimizer.step()
+        if use_moment and self.moment_optimizer is not None:
+            self.moment_optimizer.step()
 
         self.set_requires_grad([self.disc_real, self.disc_sim], True)
         self.disc_optimizer.zero_grad()
@@ -322,6 +455,7 @@ class DomainAdaptationGAN(nn.Module):
             "adv_loss": gen_metrics["adv_loss"].item(),
             "cycle_loss": gen_metrics["cycle_loss"].item(),
             "identity_loss": gen_metrics["identity_loss"].item(),
+            "moment_loss": gen_metrics["moment_loss"].item(),
             "disc_loss": disc_loss.detach().item(),
         }
         return metrics
@@ -335,7 +469,12 @@ class DomainAdaptationGAN(nn.Module):
             "disc_sim": self.disc_sim.state_dict(),
             "gen_opt": self.gen_optimizer.state_dict(),
             "disc_opt": self.disc_optimizer.state_dict(),
+            "current_epoch": self.current_epoch,
         }
+        if self.moment_estimator is not None:
+            state["moment_estimator"] = self.moment_estimator.state_dict()
+        if self.moment_optimizer is not None:
+            state["moment_opt"] = self.moment_optimizer.state_dict()
         torch.save(state, path)
 
     def load_checkpoint(self, path: str) -> None:
@@ -346,3 +485,8 @@ class DomainAdaptationGAN(nn.Module):
         self.disc_sim.load_state_dict(state["disc_sim"])
         self.gen_optimizer.load_state_dict(state["gen_opt"])
         self.disc_optimizer.load_state_dict(state["disc_opt"])
+        self.current_epoch = state.get("current_epoch", 0)
+        if self.moment_estimator is not None and "moment_estimator" in state:
+            self.moment_estimator.load_state_dict(state["moment_estimator"])
+        if self.moment_optimizer is not None and "moment_opt" in state:
+            self.moment_optimizer.load_state_dict(state["moment_opt"])
