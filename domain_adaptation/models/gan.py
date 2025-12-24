@@ -126,37 +126,42 @@ class UNet1D(nn.Module):
         return torch.tanh(self.final_conv(x))
 
 
-class PatchDiscriminator1D(nn.Module):
-    """PatchGAN 风格的一维判别器。"""
+class AdaptNetDiscriminator1D(nn.Module):
+    """AdaptNet风格的一维判别器."""
 
-    def __init__(self, in_channels: int, base_channels: int = 64) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        feature_dims: Optional[List[int]] = None,
+        dropout: float = 0.3,
+        num_domains: int = 2,
+        kernel_size: int = 3,
+    ) -> None:
         super().__init__()
-        layers: list[nn.Module] = []
-        ch = base_channels
-        layers.append(
-            nn.Sequential(
-                nn.Conv1d(in_channels, ch, kernel_size=4, stride=2, padding=1),
-                nn.LeakyReLU(0.2, inplace=True),
-            )
-        )
-        in_ch = ch
-        for mult in [2, 4]:
-            out_ch = base_channels * mult
-            layers.append(
+        feature_dims = feature_dims or [32, 64, 128, 256, 512, 1024]
+        convs: list[nn.Module] = []
+        current = in_channels
+        for out_channels in feature_dims:
+            convs.append(
                 nn.Sequential(
-                    nn.Conv1d(in_ch, out_ch, kernel_size=4, stride=2, padding=1),
-                    nn.InstanceNorm1d(out_ch),
+                    nn.Conv1d(current, out_channels, kernel_size=kernel_size, stride=2, padding=0),
+                    nn.BatchNorm1d(out_channels),
                     nn.LeakyReLU(0.2, inplace=True),
+                    nn.Dropout(dropout),
                 )
             )
-            in_ch = out_ch
-        layers.append(
-            nn.Conv1d(in_ch, 1, kernel_size=4, stride=1, padding=1)
-        )
-        self.net = nn.Sequential(*layers)
+            current = out_channels
+        self.feature_extractor = nn.Sequential(*convs)
+        self.num_domains = num_domains
+        self.fc = nn.Linear(current + num_domains, 1)
+        self.activation = nn.Sigmoid()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+    def forward(self, x: torch.Tensor, domain_onehot: torch.Tensor) -> torch.Tensor:
+        features = self.feature_extractor(x)
+        features = torch.mean(features, dim=-1)
+        concat = torch.cat([features, domain_onehot], dim=1)
+        logits = self.fc(concat)
+        return self.activation(logits)
 
 
 @dataclass
@@ -228,8 +233,8 @@ class DomainAdaptationGAN(nn.Module):
 
         self.sim2real = Sim2RealTranslator(config)
         self.real2sim = Real2SimTranslator(config)
-        self.disc_real = PatchDiscriminator1D(config.real_channels, config.base_channels)
-        self.disc_sim = PatchDiscriminator1D(config.sim_channels, config.base_channels)
+        self.disc_real = AdaptNetDiscriminator1D(config.real_channels)
+        self.disc_sim = AdaptNetDiscriminator1D(config.sim_channels)
 
         self.to(device)
         self.real_weights = self._prepare_weight_tensor(config.real_modal_weights, config.real_channels)
@@ -362,6 +367,13 @@ class DomainAdaptationGAN(nn.Module):
             for param in module.parameters():
                 param.requires_grad = flag
 
+    def _domain_onehot(self, batch_size: int, domain_id: int) -> torch.Tensor:
+        num_classes = getattr(self.disc_real, "num_domains", 2)
+        onehot = torch.zeros(batch_size, num_classes, device=self.device, dtype=torch.float32)
+        idx = max(0, min(num_classes - 1, domain_id))
+        onehot[:, idx] = 1.0
+        return onehot
+
     def _generator_losses(
         self,
         real_inputs: torch.Tensor,
@@ -371,8 +383,10 @@ class DomainAdaptationGAN(nn.Module):
         fake_real = self.sim2real(sim_inputs)
         fake_sim = self.real2sim(real_inputs)
 
-        adv_real = torch.mean((self.disc_real(fake_real) - 1) ** 2)
-        adv_sim = torch.mean((self.disc_sim(fake_sim) - 1) ** 2)
+        real_domain_onehot = self._domain_onehot(fake_real.size(0), 1)
+        sim_domain_onehot = self._domain_onehot(fake_sim.size(0), 0)
+        adv_real = torch.mean((self.disc_real(fake_real, real_domain_onehot) - 1) ** 2)
+        adv_sim = torch.mean((self.disc_sim(fake_sim, sim_domain_onehot) - 1) ** 2)
         adv_loss = (adv_real + adv_sim)*0.5
 
         cycle_sim = self.real2sim(fake_real)
@@ -416,10 +430,17 @@ class DomainAdaptationGAN(nn.Module):
         return total_loss, metrics
 
     def _discriminator_loss(
-        self, disc: PatchDiscriminator1D, real_data: torch.Tensor, fake_data: torch.Tensor
+        self,
+        disc: AdaptNetDiscriminator1D,
+        real_data: torch.Tensor,
+        fake_data: torch.Tensor,
+        real_domain_id: int,
+        fake_domain_id: int,
     ) -> torch.Tensor:
-        pred_real = disc(real_data)
-        pred_fake = disc(fake_data.detach())
+        real_labels = self._domain_onehot(real_data.size(0), real_domain_id)
+        fake_labels = self._domain_onehot(fake_data.size(0), fake_domain_id)
+        pred_real = disc(real_data, real_labels)
+        pred_fake = disc(fake_data.detach(), fake_labels)
         return 0.5 * (
             torch.mean((pred_real - 1) ** 2) + torch.mean(pred_fake**2)
         )
@@ -444,8 +465,8 @@ class DomainAdaptationGAN(nn.Module):
         self.disc_optimizer.zero_grad()
         fake_real = self.sim2real(sim_inputs).detach()
         fake_sim = self.real2sim(real_inputs).detach()
-        disc_real_loss = self._discriminator_loss(self.disc_real, real_inputs, fake_real)
-        disc_sim_loss = self._discriminator_loss(self.disc_sim, sim_inputs, fake_sim)
+        disc_real_loss = self._discriminator_loss(self.disc_real, real_inputs, fake_real, 1, 0)
+        disc_sim_loss = self._discriminator_loss(self.disc_sim, sim_inputs, fake_sim, 0, 1)
         disc_loss = disc_real_loss + disc_sim_loss
         disc_loss.backward()
         self.disc_optimizer.step()
