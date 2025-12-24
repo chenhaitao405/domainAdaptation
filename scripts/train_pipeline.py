@@ -153,10 +153,16 @@ def _random_window_pair(
     return window, pair_window
 
 
-def _collate_windows(batch, target_len: int, return_labels: bool = False):
+def _collate_windows(
+    batch,
+    target_len: int,
+    return_labels: bool = False,
+    return_names: bool = False,
+):
     input_windows = []
     label_windows: List[torch.Tensor] = []
-    for inputs, labels, seq_lengths, _ in batch:
+    trial_names_batch: List[List[str]] = []
+    for inputs, labels, seq_lengths, trial_names in batch:
         seq_len = int(seq_lengths[0]) if isinstance(seq_lengths, list) else int(seq_lengths)
         input_tensor = inputs.squeeze(0)
         label_tensor = labels.squeeze(0) if return_labels else None
@@ -166,10 +172,18 @@ def _collate_windows(batch, target_len: int, return_labels: bool = False):
             if label_window is None:
                 raise RuntimeError("期望标签窗口但未生成，请检查数据加载流程")
             label_windows.append(label_window)
+        if return_names:
+            names = trial_names if isinstance(trial_names, list) else [trial_names]
+            trial_names_batch.append(names)
     input_batch = torch.stack(input_windows, dim=0)
+    outputs: List[Any] = [input_batch]
     if return_labels:
-        return input_batch, torch.stack(label_windows, dim=0)
-    return input_batch
+        outputs.append(torch.stack(label_windows, dim=0))
+    if return_names:
+        outputs.append(trial_names_batch)
+    if len(outputs) == 1:
+        return input_batch
+    return tuple(outputs)
 
 
 def _build_loader(
@@ -179,8 +193,14 @@ def _build_loader(
     num_workers: int,
     shuffle: bool = True,
     return_labels: bool = False,
+    return_names: bool = False,
 ) -> DataLoader:
-    collate_fn = partial(_collate_windows, target_len=target_len, return_labels=return_labels)
+    collate_fn = partial(
+        _collate_windows,
+        target_len=target_len,
+        return_labels=return_labels,
+        return_names=return_names,
+    )
     return DataLoader(
         dataset,
         batch_size=batch_size,
