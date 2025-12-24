@@ -89,13 +89,87 @@ def _random_window(sample: torch.Tensor, valid_len: int, target_len: int) -> tor
     return window
 
 
-def _collate_windows(batch, target_len: int) -> torch.Tensor:
-    windows = []
-    for inputs, _, seq_lengths, _ in batch:
+def _random_window_pair(
+    sample: torch.Tensor,
+    paired: Optional[torch.Tensor],
+    valid_len: int,
+    target_len: int,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """在保证同一起止位置的前提下，同时裁剪输入与标签窗口."""
+    if valid_len <= 0:
+        base = torch.zeros(sample.shape[0], target_len, device=sample.device, dtype=sample.dtype)
+        if paired is None:
+            return base, None
+        pair_base = torch.zeros(paired.shape[0], target_len, device=paired.device, dtype=paired.dtype)
+        return base, pair_base
+
+    sample = sample[:, :valid_len]
+    paired_tensor = paired[:, :valid_len] if paired is not None else None
+    valid_mask = torch.isfinite(sample).all(dim=0)
+    if paired_tensor is not None:
+        valid_mask = valid_mask & torch.isfinite(paired_tensor).all(dim=0)
+    segments = _find_valid_segments(valid_mask)
+
+    def _slice_tensor(tensor: torch.Tensor, start: int, end: int) -> torch.Tensor:
+        return tensor[:, start:end]
+
+    if segments:
+        long_segments = [seg for seg in segments if (seg[1] - seg[0]) >= target_len]
+        if long_segments:
+            seg_start, seg_end = random.choice(long_segments)
+            max_start = seg_end - target_len
+            start = random.randint(seg_start, max_start)
+            end = start + target_len
+        else:
+            seg_start, seg_end = max(segments, key=lambda seg: seg[1] - seg[0])
+            start, end = seg_start, seg_end
+    else:
+        start, end = 0, sample.shape[-1]
+
+    window = _slice_tensor(sample, start, min(end, sample.shape[-1]))
+    pair_window = (
+        _slice_tensor(paired_tensor, start, min(end, paired_tensor.shape[-1]))
+        if paired_tensor is not None
+        else None
+    )
+
+    window = _replace_nan(window)
+    if pair_window is not None:
+        pair_window = _replace_nan(pair_window)
+
+    def _pad_if_needed(tensor: torch.Tensor) -> torch.Tensor:
+        if tensor.shape[-1] < target_len:
+            pad = target_len - tensor.shape[-1]
+            tensor = F.pad(tensor, (0, pad))
+        elif tensor.shape[-1] > target_len:
+            start_idx = random.randint(0, tensor.shape[-1] - target_len)
+            tensor = tensor[:, start_idx:start_idx + target_len]
+        return tensor
+
+    window = _pad_if_needed(window)
+    if pair_window is not None:
+        pair_window = _pad_if_needed(pair_window)
+
+    return window, pair_window
+
+
+def _collate_windows(batch, target_len: int, return_labels: bool = False):
+    input_windows = []
+    label_windows: List[torch.Tensor] = []
+    for inputs, labels, seq_lengths, _ in batch:
         seq_len = int(seq_lengths[0]) if isinstance(seq_lengths, list) else int(seq_lengths)
-        tensor = inputs.squeeze(0)
-        windows.append(_random_window(tensor, seq_len, target_len))
-    return torch.stack(windows, dim=0)
+        input_tensor = inputs.squeeze(0)
+        label_tensor = labels.squeeze(0) if return_labels else None
+        window, label_window = _random_window_pair(input_tensor, label_tensor, seq_len, target_len)
+        input_windows.append(window)
+        if return_labels:
+            if label_window is None:
+                raise RuntimeError("期望标签窗口但未生成，请检查数据加载流程")
+            label_windows.append(label_window)
+    input_batch = torch.stack(input_windows, dim=0)
+    if return_labels:
+        return input_batch, torch.stack(label_windows, dim=0)
+    return input_batch
 
 
 def _build_loader(
@@ -104,8 +178,9 @@ def _build_loader(
     target_len: int,
     num_workers: int,
     shuffle: bool = True,
+    return_labels: bool = False,
 ) -> DataLoader:
-    collate_fn = partial(_collate_windows, target_len=target_len)
+    collate_fn = partial(_collate_windows, target_len=target_len, return_labels=return_labels)
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -142,27 +217,29 @@ def _identify_modality(channel_name: str) -> Optional[str]:
     return None
 
 
-def _compute_modality_scales(channel_names: Optional[List[str]], variances: Optional[List[float]]) -> Optional[List[float]]:
+def _compute_modality_weights(channel_names: Optional[List[str]], variances: Optional[List[float]]) -> Optional[List[float]]:
     if not channel_names or not variances:
         return None
+    name_to_var = {name: max(var, 1e-6) for name, var in zip(channel_names, variances)}
     group_max: Dict[str, float] = {}
     for name, var in zip(channel_names, variances):
         group = _identify_modality(name)
         if group is None:
             continue
-        current = group_max.get(group, 0.0)
-        if var > current:
-            group_max[group] = var
+        value = max(var, 1e-6)
+        group_max[group] = max(group_max.get(group, 0.0), value)
     if not group_max:
         return None
-    scales: List[float] = []
+    weights: List[float] = []
     for name in channel_names:
         group = _identify_modality(name)
         if group and group in group_max:
-            scales.append(max(group_max[group], 1e-6))
+            max_var = max(group_max[group], 1e-6)
+            channel_var = name_to_var[name]
+            weights.append(min(channel_var / max_var, 1.0))
         else:
-            scales.append(1.0)
-    return scales
+            weights.append(1.0)
+    return weights
 
 
 def _aggregate_channel_stats(dataset: Any, use_norm: bool = True) -> Tuple[Optional[List[str]], Optional[List[float]]]:
@@ -196,24 +273,24 @@ def _aggregate_channel_stats(dataset: Any, use_norm: bool = True) -> Tuple[Optio
 def _prepare_real_dataset(config: DatasetConfig, device: torch.device, max_trials: int | None):
     dataset = DataManager.load_datasets(config, device=device)
     channel_names, variances = _aggregate_channel_stats(dataset, use_norm=False)
-    channel_scales = _compute_modality_scales(channel_names, variances)
+    channel_weights = _compute_modality_weights(channel_names, variances)
     valid_indices = DataManager.get_or_compute_valid_indices(dataset, config)
     if max_trials is not None:
         valid_indices = valid_indices[:max_trials]
     if len(valid_indices) == 0:
         raise RuntimeError("真实域数据过滤后为空，请检查数据配置")
-    return Subset(dataset, valid_indices), channel_scales
+    return Subset(dataset, valid_indices), channel_weights
 
 
 def _prepare_sim_dataset(config: DatasetConfig, device: torch.device, max_trials: int | None):
     dataset = DataManager.load_sim_datasets(config, device=device)
     channel_names, variances = _aggregate_channel_stats(dataset, use_norm=False)
-    channel_scales = _compute_modality_scales(channel_names, variances)
+    channel_weights = _compute_modality_weights(channel_names, variances)
     if max_trials is not None:
         dataset = Subset(dataset, list(range(min(max_trials, len(dataset)))))
     if len(dataset) == 0:
         raise RuntimeError("模拟域数据为空，请检查数据配置")
-    return dataset, channel_scales
+    return dataset, channel_weights
 
 
 def _next_batch(iterator, loader):
@@ -233,7 +310,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--steps-per-epoch", type=int, default=None, help="每个epoch迭代次数；默认=min(len loaders))")
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--seq-len", type=int, default=2560, help="裁剪窗口长度")
+    parser.add_argument("--seq-len", type=int, default=256, help="裁剪窗口长度")
     parser.add_argument("--base-channels", type=int, default=64, help="U-Net初始通道数")
     parser.add_argument("--unet-depth", type=int, default=4, help="U-Net下采样深度")
     parser.add_argument("--gen-lr", type=float, default=1e-3)
@@ -253,6 +330,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlflow", action="store_true", help="启用MLflow记录")
     parser.add_argument("--mlflow-uri", type=str, default=None, help="可选MLflow Tracking URI")
     parser.add_argument("--mlflow-experiment", type=str, default="domain_adaptation", help="MLflow实验名")
+    parser.add_argument("--lambda-moment", type=float, default=1.21, help="力矩估计损失权重")
+    parser.add_argument("--moment-start-epoch", type=int, default=20, help="力矩估计损失的启动epoch")
+    parser.add_argument("--tcn-num-channels", type=str, default="80,80,80,80,80", help="TCN每层通道数, 逗号分隔")
+    parser.add_argument("--tcn-kernel-size", type=int, default=5, help="TCN卷积核大小")
+    parser.add_argument("--tcn-dropout", type=float, default=0.15, help="TCN dropout")
+    parser.add_argument("--tcn-learning-rate", type=float, default=5e-4, help="TCN优化器学习率")
+    parser.add_argument("--tcn-eff-hist", type=int, default=248, help="TCN有效历史长度")
+    parser.add_argument("--tcn-load-path", type=str, default=None, help="可选TCN checkpoint路径")
+    parser.add_argument("--tcn-freeze", action="store_true", help="固定TCN参数，仅用于计算moment loss")
     return parser.parse_args()
 
 
@@ -300,6 +386,16 @@ def _prepare_run_directory(base_dir: str, run_name: Optional[str]) -> Tuple[str,
 def main() -> None:
     args = parse_args()
     _set_seed(args.seed)
+    try:
+        tcn_channels = tuple(
+            int(x.strip())
+            for x in args.tcn_num_channels.split(",")
+            if x.strip()
+        )
+    except ValueError as exc:
+        raise ValueError(f"无法解析 --tcn-num-channels: {args.tcn_num_channels}") from exc
+    if len(tcn_channels) == 0:
+        raise ValueError("至少需要一个TCN通道配置")
 
     dataset_cfg = DatasetConfig(
         data_dirs=args.data_dirs,
@@ -320,20 +416,22 @@ def main() -> None:
 
     try:
         cpu_device = torch.device("cpu")
-        real_dataset, real_sigma = _prepare_real_dataset(dataset_cfg, cpu_device, args.max_real_trials)
-        sim_dataset, sim_sigma = _prepare_sim_dataset(dataset_cfg, cpu_device, args.max_sim_trials)
+        real_dataset, real_weights = _prepare_real_dataset(dataset_cfg, cpu_device, args.max_real_trials)
+        sim_dataset, sim_weights = _prepare_sim_dataset(dataset_cfg, cpu_device, args.max_sim_trials)
 
         real_loader = _build_loader(
             real_dataset,
             batch_size=args.batch_size,
             target_len=args.seq_len,
             num_workers=args.num_workers,
+            return_labels=False,
         )
         sim_loader = _build_loader(
             sim_dataset,
             batch_size=args.batch_size,
             target_len=args.seq_len,
             num_workers=args.num_workers,
+            return_labels=args.lambda_moment > 0,
         )
 
         if len(real_loader) == 0 or len(sim_loader) == 0:
@@ -352,8 +450,18 @@ def main() -> None:
             identity_loss_weight=args.lambda_identity,
             gan_loss_weight=args.lambda_gan,
             device=args.device,
-            sim_sigma_max=sim_sigma,
-            real_sigma_max=real_sigma,
+            sim_modal_weights=sim_weights,
+            real_modal_weights=real_weights,
+            label_channels=len(dataset_cfg.label_names),
+            lambda_moment=args.lambda_moment,
+            moment_start_epoch=args.moment_start_epoch,
+            tcn_num_channels=tcn_channels,
+            tcn_kernel_size=args.tcn_kernel_size,
+            tcn_dropout=args.tcn_dropout,
+            tcn_learning_rate=args.tcn_learning_rate,
+            tcn_eff_hist=args.tcn_eff_hist,
+            tcn_load_path=args.tcn_load_path,
+            tcn_freeze=args.tcn_freeze,
         )
         model = DomainAdaptationGAN(gan_config)
 
@@ -382,8 +490,11 @@ def main() -> None:
         best_epoch = None
         best_path = os.path.join(run_dir, "best.pt")
         last_path = os.path.join(run_dir, "last.pt")
+        best_tcn_path = os.path.join(run_dir, "best_tcn.tar") if args.lambda_moment > 0 else None
+        last_tcn_path = os.path.join(run_dir, "last_tcn.tar") if args.lambda_moment > 0 else None
 
         for epoch in range(1, args.epochs + 1):
+            model.set_current_epoch(epoch)
             epoch_metrics: Dict[str, float] = {}
             progress = tqdm(
                 range(1, steps_per_epoch + 1),
@@ -393,7 +504,16 @@ def main() -> None:
             for step in progress:
                 real_batch, real_iter = _next_batch(real_iter, real_loader)
                 sim_batch, sim_iter = _next_batch(sim_iter, sim_loader)
-                metrics = model.training_step({"real": real_batch, "sim": sim_batch})
+                real_inputs = real_batch[0] if isinstance(real_batch, tuple) else real_batch
+                if isinstance(sim_batch, tuple):
+                    sim_inputs, sim_labels = sim_batch
+                else:
+                    sim_inputs, sim_labels = sim_batch, None
+                if args.lambda_moment > 0 and sim_labels is None:
+                    raise RuntimeError("需要力矩标签但未从sim_loader返回，请检查DataLoader设置")
+                metrics = model.training_step(
+                    {"real": real_inputs, "sim": sim_inputs, "sim_labels": sim_labels}
+                )
                 for key, value in metrics.items():
                     epoch_metrics[key] = epoch_metrics.get(key, 0.0) + value
 
@@ -418,9 +538,13 @@ def main() -> None:
                 best_metric = metric
                 best_epoch = epoch
                 model.save_checkpoint(best_path)
+                if best_tcn_path:
+                    model.save_tcn_checkpoint(best_tcn_path, epoch, metric)
                 print(f"Best checkpoint updated at epoch {epoch} (gen_total={metric:.4f}) -> {best_path}")
 
             model.save_checkpoint(last_path)
+            if last_tcn_path:
+                model.save_tcn_checkpoint(last_tcn_path, epoch, metric)
             print(f"Latest checkpoint saved to: {last_path}")
 
         if best_epoch is not None:

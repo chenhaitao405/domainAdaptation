@@ -1,0 +1,881 @@
+Supplementary Materials for
+Deep domain adaptation eliminates costly data required for task-agnostic
+wearable robotic control
+Keaton L. Scherpereel et al.
+Corresponding author: Keaton L. Scherpereel, keaton@gatech.edu
+Sci. Robot. 10, eads8652 (2025)
+DOI: 10.1126/scirobotics.ads8652
+
+The PDF file includes:
+Methods
+Figs. S1 to S10
+Tables S1 and S2
+References (44–53)
+Other Supplementary Material for this manuscript includes the following:
+Movie S1
+MDAR Reproducibility Checklist
+
+Supplementary Methods
+The supplementary methods contain additional information about the processing of the opensource training datasets used to train our network. Additional information is also provided about
+the network training losses, model architecture optimization, and training procedure. This is
+backed up by tables S1 and S2 which provide the final selected hyperparameter values based on
+the optimizations. This is followed up by eight additional analyses: the comparison between
+offline and online performance of our models, the impact of the GAN loss in our training
+procedure, the instability of the unsupervised baseline which prohibited the real-time deployment
+of that model, the extension of our domain adaptation methods beyond moment estimation to
+ground reaction force (GRF) estimation and activity classification, the comparison of our realtime results to our previous publication, pilot metabolic cost results for level ground walking, an
+exploration of simulated versus real sensing for the unlabeled exoskeleton data, and an analysis
+of the participant-by-participant benefits accrued from adding unlabeled data to the unsupervised
+model.
+Training Data
+Because of the data collection method, data with an unactuated exoskeleton was only available
+for the first 10 participants (labeled phase 1 in that dataset) (12). We used the real IMU data for
+the thigh and shank (OpenIMU, Tewksbury, MA) and encoder data from the hip and knee (TMotor AK80-9s, Nanchang, China). For our semi-supervised model, we included data from the
+first 15 participants for certain tasks which included data where assistance was not provided
+(first 10 participants labeled phase 1), data where assistance was provided based on heuristic
+controllers (first 10 participants labeled phase 1), and data where assistance was provided based
+on a preliminary model (participants 11-15 labeled phase 2). These latter five participants
+formed the internal test set for cross-fold validation because they were the closest representation
+of what a real time deployed model would encounter. Simulated sensors that matched those used
+in the no exoskeleton dataset were created from the inverse kinematics on the exoskeleton data
+for use in semi-supervised, sensor-translation training.
+The final participants from this dataset (participants labeled “phase 3”) formed our true test set.
+Although this dataset includes 10 participants, 2 were removed because they had participated in
+the original study without an exoskeleton (39) and thus were in the training data. The final 8
+participants were used to evaluate performance and thus the real exoskeleton data with the same
+sensors used in training were passed through the moment estimator and the accuracy of the
+estimated moments was assessed.
+Training Loss Computation
+Five different types of losses were used in different combinations to train our network as
+pictured in Figure 8.
+
+Supervised Loss
+In the semi-supervised case, sensors were simulated using the body segment positions and
+velocities at the same location as the real sensors. This created time-paired data that was used as
+part of the translator network loss for the limited amount of data available. Data from the
+simulated domain (𝑋𝑋𝑠𝑠 ) were compared with data from the real domain (𝑋𝑋𝑟𝑟 ) that were translated
+using the appropriate translator (𝑇𝑇𝑟𝑟→𝑠𝑠 ). To compute reconstruction loss, we used mean squared
+error (MSE) normalized by sensor modality as described below. Reconstruction loss for the
+simulation-to-real translator and the real-to-sim translator were weighted equally as summarized
+in equation S1. The parameters 𝜃𝜃 and 𝜙𝜙 represent the weights for their respective translators
+(𝑇𝑇𝑟𝑟→𝑠𝑠 and 𝑇𝑇𝑠𝑠→𝑟𝑟 ) that are optimized during training.
+
+To ensure that each sensor modality for each location (e.g. thigh acceleration or shank angular
+velocity) was weighted equally in reconstruction, we normalized the MSE loss for the individual
+vector components (e.g. thigh acceleration in the x- or y-directions) by the maximum value
+across all components of that sensor location and modality. First, we took the covariance, Σ 2 , for
+each specific sensor location and modality (i.e., �𝒶𝒶⃗𝑆𝑆ℎ𝑎𝑎𝑎𝑎𝑎𝑎 , 𝒶𝒶⃗ 𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ , 𝜔𝜔
+�⃗𝑆𝑆ℎ𝑎𝑎𝑎𝑎𝑎𝑎 , 𝜔𝜔
+�⃗ 𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ �, where each
+3
+component is in ℝ ). Then, we computed the maximum variance among the cardinal directions
+(i.e., diagonal components) of the covariance matrix for each sensor location and modality, such
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+= �𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑�Σ𝒶𝒶2⃗𝑆𝑆ℎ𝑎𝑎𝑎𝑎𝑎𝑎 �� for the shank acceleration. Finally, we performed element-wise
+as 𝜎𝜎𝑎𝑎�⃗
+𝑠𝑠ℎ𝑎𝑎𝑎𝑎𝑎𝑎
+
+∞
+
+division (i.e., with the Hadamard quotient, ⊘) for the translator loss terms. This procedure
+ensured that off-axis signals did not get over-emphasized in reconstruction.
+𝐿𝐿𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠 (𝜃𝜃, 𝜙𝜙)
+2
+1
+(𝜃𝜃)
+=
+�
+��𝑇𝑇𝑟𝑟→𝑠𝑠 (𝑋𝑋𝑟𝑟 ) − 𝑋𝑋𝑠𝑠 �
+2|𝔻𝔻𝑙𝑙𝑙𝑙 |
+(𝑋𝑋𝑠𝑠 , 𝑋𝑋𝑟𝑟 )∈𝔻𝔻𝑙𝑙𝑙𝑙
+(S1)
+2
+(𝜙𝜙)
+(𝑋𝑋
+)
++ �𝑇𝑇𝑠𝑠→𝑟𝑟 𝑠𝑠 − 𝑋𝑋𝑟𝑟 � �
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+⊘ �𝜎𝜎𝑎𝑎�⃗
+
+𝑆𝑆ℎ𝑎𝑎𝑎𝑎𝑎𝑎
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+, 𝜎𝜎𝑎𝑎�⃗
+
+𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+, 𝜎𝜎���⃗
+𝜔𝜔
+
+𝑠𝑠ℎ𝑎𝑎𝑎𝑎𝑎𝑎
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+, 𝜎𝜎���⃗
+𝜔𝜔
+
+𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ
+
+�
+
+Cycle Consistency Loss
+Due to the bidirectional translation, sensor data from the simulated domain (𝑋𝑋𝑠𝑠 ) that was passed
+through both the simulation-to-real translator (𝑇𝑇𝑠𝑠→𝑟𝑟 ) and then the real-to-sim translator (𝑇𝑇𝑟𝑟→𝑠𝑠 )
+should return data that match the original data. To compute the reconstruction loss for these
+signals, the same sensor normalized MSE metric as above was used and the loss from 𝑠𝑠𝑠𝑠𝑠𝑠 →
+𝑟𝑟𝑟𝑟𝑟𝑟𝑟𝑟 → 𝑠𝑠𝑠𝑠𝑠𝑠 and from 𝑟𝑟𝑟𝑟𝑟𝑟𝑟𝑟 → 𝑠𝑠𝑠𝑠𝑠𝑠 → 𝑟𝑟𝑟𝑟𝑟𝑟𝑟𝑟 was equally weighted as summarized in equation S2.
+𝜃𝜃 and 𝜙𝜙 again represent the weights for their respective translators.
+
+2
+1 1
+(𝜙𝜙)
+(𝜃𝜃)
+𝐿𝐿𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐 (𝜃𝜃, 𝜙𝜙) = �
+� �𝑇𝑇𝑟𝑟→𝑠𝑠 �𝑇𝑇𝑠𝑠→𝑟𝑟 (𝑋𝑋𝑠𝑠 )� − 𝑋𝑋𝑠𝑠 �
+2 |𝔻𝔻𝑙𝑙𝑙𝑙 |
+
+⊘
++
+
+𝑋𝑋𝑠𝑠 ∈𝔻𝔻𝑙𝑙𝑙𝑙
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+[𝜎𝜎𝑎𝑎�⃗
+, 𝜎𝜎𝑎𝑎�⃗
+, 𝜎𝜎𝜔𝜔
+���⃗𝑠𝑠ℎ𝑎𝑎𝑎𝑎𝑎𝑎 , 𝜎𝜎𝜔𝜔
+���⃗𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ ]
+𝑆𝑆ℎ𝑎𝑎𝑎𝑎𝑎𝑎
+𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ
+
+2
+1
+(𝜙𝜙)
+(𝜃𝜃)
+� �𝑇𝑇𝑠𝑠→𝑟𝑟 �𝑇𝑇𝑟𝑟→𝑠𝑠 (𝑋𝑋𝑟𝑟 )� − 𝑋𝑋𝑟𝑟 �
+|𝔻𝔻𝑢𝑢𝑢𝑢 |
+𝑋𝑋𝑟𝑟 ∈𝔻𝔻𝑢𝑢𝑢𝑢
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+⊘ [𝜎𝜎𝑎𝑎�⃗
+
+𝑆𝑆ℎ𝑎𝑎𝑎𝑎𝑎𝑎
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+, 𝜎𝜎𝑎𝑎�⃗
+
+𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+, 𝜎𝜎𝜔𝜔
+���⃗
+
+𝑠𝑠ℎ𝑎𝑎𝑎𝑎𝑎𝑎
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+, 𝜎𝜎𝜔𝜔
+���⃗
+
+𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ
+
+(S2)
+
+]�
+
+GAN Loss
+Although the original CycleGAN used a binary cross-entropy loss (36), we chose to use a leastsquares objective for the GAN portion of our network. This approach lends stability to training
+by providing more gradient information to the generator while addressing the vanishing gradient
+problem (44) and has been used successfully for human activity recognition (37). Thus, the goal
+of the discriminator is to minimize mean squared error between the output of the discriminator
+and the correct classification value (1 for data from the same domain, 0 for data translated from
+another domain) using discriminator weights (𝛽𝛽 or 𝛾𝛾) given the current translator parameters (𝜃𝜃
+or 𝜙𝜙) as shown in equations S3 and S4.
+𝐿𝐿𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑 𝑟𝑟𝑟𝑟𝑟𝑟𝑟𝑟 (𝛽𝛽, 𝜙𝜙)
+2
+1
+(𝛽𝛽)
+(𝜙𝜙)
+=
+� �𝐷𝐷𝑟𝑟 �𝑇𝑇𝑠𝑠→𝑟𝑟 (𝑋𝑋𝑠𝑠 )� − 0�
+|𝔻𝔻𝑙𝑙𝑙𝑙 |
+(S3)
+𝑋𝑋𝑠𝑠 ∈𝔻𝔻𝑙𝑙𝑙𝑙
+2
+1
+(𝛽𝛽)
++
+� �𝐷𝐷𝑟𝑟 (𝑋𝑋𝑟𝑟 ) − 1�
+|𝔻𝔻𝑢𝑢𝑢𝑢 |
+𝑋𝑋𝑟𝑟 ∈𝔻𝔻𝑢𝑢𝑢𝑢
+
+𝐿𝐿𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑𝑑 𝑠𝑠𝑠𝑠𝑠𝑠 (𝛾𝛾, 𝜃𝜃)
+2
+1
+(𝛾𝛾)
+=
+� �𝐷𝐷𝑠𝑠 (𝑋𝑋𝑠𝑠 ) − 1�
+|𝔻𝔻𝑙𝑙𝑙𝑙 |
+𝑋𝑋𝑠𝑠 ∈𝔻𝔻𝑙𝑙𝑙𝑙
+
+2
+1
+(𝛾𝛾)
+(𝜃𝜃)
++
+� �𝐷𝐷𝑠𝑠 �𝑇𝑇𝑟𝑟→𝑠𝑠 (𝑋𝑋𝑟𝑟 )� − 0�
+|𝔻𝔻𝑢𝑢𝑢𝑢 |
+𝑋𝑋𝑟𝑟 ∈𝔻𝔻𝑢𝑢𝑢𝑢
+
+(S4)
+
+The goal for the translator (acting as the generator for our case) is to produce data that are
+classified by the discriminator as true data (1 in our binary encoding). Thus, we minimized the
+(𝛽𝛽)
+(𝜙𝜙)
+mean squared error between the discriminator output (𝐷𝐷𝑟𝑟 (𝑇𝑇𝑠𝑠→𝑟𝑟 (𝑋𝑋𝑠𝑠 )) and that classification
+using the translator weights (𝜃𝜃 or 𝜙𝜙) given the current discriminator parameters (𝛽𝛽 or 𝛾𝛾). Again,
+the losses from both the sim and real sides are weighted equally as in equation S5.
+
+𝐿𝐿𝐺𝐺𝐺𝐺𝐺𝐺 (𝜃𝜃, 𝜙𝜙, 𝛽𝛽, 𝛾𝛾)
+
+2
+1 1
+(𝛽𝛽)
+(𝜙𝜙)
+= �
+� �𝐷𝐷𝑟𝑟 �𝑇𝑇𝑠𝑠→𝑟𝑟 (𝑋𝑋𝑠𝑠 )� − 1�
+2 |𝔻𝔻𝑙𝑙𝑙𝑙 |
+
++
+
+𝑋𝑋𝑠𝑠 ∈𝔻𝔻𝑙𝑙𝑙𝑙
+
+(S5)
+
+2
+1
+(𝛾𝛾)
+(𝜃𝜃)
+� �𝐷𝐷𝑠𝑠 �𝑇𝑇𝑟𝑟→𝑠𝑠 (𝑋𝑋𝑟𝑟 )� − 1� �
+|𝔻𝔻𝑢𝑢𝑢𝑢 |
+𝑋𝑋𝑟𝑟 ∈𝔻𝔻𝑢𝑢𝑢𝑢
+
+Identity Loss
+When testing the unsupervised case, we found that an identity loss helped to constrain the
+translators and stabilize convergence. This loss ensures that data from one domain passed
+through the translator to that same domain returns itself (e.g. data from the simulated domain
+(𝑋𝑋𝑠𝑠 ) when passed through the real-to-sim translator (𝑇𝑇𝑟𝑟→𝑠𝑠 ) should produce the original data).
+Some image-based techniques, such as CycleGAN, have used this loss for a similar purpose (36,
+45). Again, the sensor normalized MSE was used to compare the data, and sim and real sides
+were equally weighted as in equation S6 with 𝜃𝜃 and 𝜙𝜙 as the weights for the different translators.
+𝐿𝐿𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖 (𝜃𝜃, 𝜙𝜙)
+2
+1 1
+(𝜃𝜃)
+= �
+� �𝑇𝑇𝑟𝑟→𝑠𝑠 (𝑋𝑋𝑠𝑠 ) − 𝑋𝑋𝑠𝑠 �
+2 |𝔻𝔻𝑙𝑙𝑙𝑙 |
+
+⊘
++
+
+𝑋𝑋𝑠𝑠 ∈𝔻𝔻𝑙𝑙𝑙𝑙
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+[𝜎𝜎𝑎𝑎�⃗
+, 𝜎𝜎𝑎𝑎�⃗
+, 𝜎𝜎𝜔𝜔
+���⃗𝑠𝑠ℎ𝑎𝑎𝑎𝑎𝑎𝑎 , 𝜎𝜎𝜔𝜔
+���⃗𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ ]
+𝑆𝑆ℎ𝑎𝑎𝑎𝑎𝑎𝑎
+𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ
+2
+1
+(𝜙𝜙)
+
+|𝔻𝔻𝑢𝑢𝑢𝑢 |
+
+� �𝑇𝑇𝑠𝑠→𝑟𝑟 (𝑋𝑋𝑟𝑟 ) − 𝑋𝑋𝑟𝑟 �
+
+𝑋𝑋𝑟𝑟 ∈𝔻𝔻𝑢𝑢𝑢𝑢
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+⊘ [𝜎𝜎𝑎𝑎�⃗
+
+𝑆𝑆ℎ𝑎𝑎𝑎𝑎𝑎𝑎
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+, 𝜎𝜎𝑎𝑎�⃗
+
+𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+, 𝜎𝜎𝜔𝜔
+���⃗
+
+𝑠𝑠ℎ𝑎𝑎𝑎𝑎𝑎𝑎
+
+(𝑚𝑚𝑚𝑚𝑚𝑚)
+
+, 𝜎𝜎𝜔𝜔
+���⃗
+
+𝑇𝑇ℎ𝑖𝑖𝑖𝑖ℎ
+
+(S6)
+
+]�
+
+Moment Loss
+The final component of the framework, the moment estimator (𝑀𝑀𝐸𝐸𝑟𝑟 ), is trained to take real data
+and estimate the user’s biological moment. Samples used to train this portion of the network
+consist of translated data from biomechanics datasets in the simulated domain (𝑇𝑇𝑠𝑠→𝑟𝑟 (𝑋𝑋𝑠𝑠 )) with
+their respective labels (𝑦𝑦𝑠𝑠 ) and in the semi-supervised case any available labeled real exoskeleton
+data (𝑋𝑋𝑟𝑟 ) with respective moment labels (𝑦𝑦𝑟𝑟 ). MSE was used as the metric to measure error
+between ground truth joint moments and estimates from the model. Thus, the loss for the
+moment estimator can be summarized in equation S7 with 𝜓𝜓 representing the weights of the
+moment estimator and 𝜙𝜙 the translator.
+𝐿𝐿𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚 𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒𝑒 (𝜙𝜙, 𝜓𝜓)
+2
+1
+(𝜓𝜓)
+(𝜙𝜙)
+=
+� �𝑀𝑀𝑀𝑀𝑟𝑟 �𝑇𝑇𝑠𝑠→𝑟𝑟 (𝑋𝑋𝑠𝑠 )� − 𝑦𝑦𝑠𝑠 �
+|𝔻𝔻𝑙𝑙𝑙𝑙 |
+(S7)
+(𝑋𝑋𝑠𝑠 ,𝑦𝑦𝑠𝑠 )∈𝔻𝔻𝑙𝑙𝑙𝑙
+2
+1
+(𝜓𝜓)
++
+�
+�𝑀𝑀𝑀𝑀𝑟𝑟 (𝑋𝑋𝑟𝑟 ) − 𝑦𝑦𝑟𝑟 �
+|𝔻𝔻𝑢𝑢𝑢𝑢 |
+(𝑋𝑋𝑟𝑟 ,𝑦𝑦𝑟𝑟 )∈𝔻𝔻𝑢𝑢𝑢𝑢
+
+Because a portion of the moment estimation loss is contingent upon the simulation-to-real
+translator (𝑇𝑇𝑠𝑠→𝑟𝑟 ), this loss can also be backpropagated through the translator and can be used as a
+component of the translator loss given moment estimator weights 𝜓𝜓. This is summarized in
+equation S8.
+𝐿𝐿𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚 (𝜙𝜙, 𝜓𝜓)
+2
+1
+(𝜓𝜓)
+(𝜙𝜙)
+(S8)
+=
+� �𝑀𝑀𝑀𝑀𝑟𝑟 �𝑇𝑇𝑠𝑠→𝑟𝑟 (𝑋𝑋𝑠𝑠 )� − 𝑦𝑦𝑠𝑠 �
+|𝔻𝔻𝑙𝑙𝑙𝑙 |
+(𝑋𝑋𝑠𝑠 ,𝑦𝑦𝑠𝑠 )∈𝔻𝔻𝑙𝑙𝑙𝑙
+
+Combined Translator Loss
+The combined loss for the translator portion of the network can be computed as the weighted
+sum of the above loss components. In the unsupervised case, there is no data to compute a
+supervised loss, thus the combined loss for the translator can be written in terms of equations S2,
+S5, S6, and S8. The objective is shown in equation S9 where the weights
+(𝜆𝜆𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐 , 𝜆𝜆𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖 , 𝜆𝜆𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚 ) are hyperparameters to tune, 𝜃𝜃 and 𝜙𝜙 are translator weights to
+optimize, and 𝛽𝛽, 𝛾𝛾, and 𝜓𝜓 are weights of the discriminators and moment estimator.
+𝐿𝐿𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡 (𝜃𝜃, 𝜙𝜙, 𝛽𝛽, 𝛾𝛾, 𝜓𝜓)
+= 𝐿𝐿𝐺𝐺𝐺𝐺𝐺𝐺 (𝜃𝜃, 𝜙𝜙, 𝛽𝛽, 𝛾𝛾) + 𝜆𝜆𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐 ∙ 𝐿𝐿𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐 (𝜃𝜃, 𝜙𝜙)
+(S9)
++ 𝜆𝜆𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖 ∙ 𝐿𝐿𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖 (𝜃𝜃, 𝜙𝜙) + 𝜆𝜆𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚
+∙ 𝐿𝐿𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚 (𝜙𝜙, 𝜓𝜓)
+In the semi-supervised case, we added the supervised loss based on the small-scale labeled
+dataset (equation S1). We tested including the moment loss (equation S8) similar to the
+unsupervised case, but we found that accuracy did not improve. Therefore, due to training time
+considerations, the moment loss for the translator (equation S8) was removed from the loss
+function for the semi-supervised case. Thus, the combined translator loss for the semi-supervised
+case can be written in terms of equations S1, S2, S5 and S6. This loss is shown in equation S10
+where the weights (𝜆𝜆𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐 , 𝜆𝜆𝐺𝐺𝐺𝐺𝐺𝐺 , 𝜆𝜆𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖 ) are hyperparameters to tune.
+𝐿𝐿𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡𝑡 (𝜃𝜃, 𝜙𝜙, 𝛽𝛽, 𝛾𝛾, 𝜓𝜓)
+= 𝐿𝐿𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠𝑠 (𝜃𝜃, 𝜙𝜙) + 𝜆𝜆𝐺𝐺𝐺𝐺𝐺𝐺
+(S10)
+∙ 𝐿𝐿𝐺𝐺𝐺𝐺𝐺𝐺 (𝜃𝜃, 𝜙𝜙, 𝛽𝛽, 𝛾𝛾) + 𝜆𝜆𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐 ∙ 𝐿𝐿𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐 (𝜃𝜃, 𝜙𝜙)
++ 𝜆𝜆𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖 ∙ 𝐿𝐿𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖 (𝜃𝜃, 𝜙𝜙)
+To minimize these losses and train all portions of the network simultaneously, we alternated
+training steps between the discriminators and the translators/moment estimator. With fixed
+translator weights, we minimized the discriminator losses from equation S3 and S4 by
+performing stochastic gradient descent (Adam) on the discriminator weights (𝛽𝛽 and 𝛾𝛾). With
+these updated weights fixed, we then minimized the translator loss from equation S9 or S10
+(depending on the case) and moment estimator loss from equation S7 by performing stochastic
+gradient descent (Adam) on the translator weights (𝜃𝜃 and 𝜙𝜙) and moment estimator weights (𝜓𝜓).
+We repeated this process until the early stopping criterion (dictated by the data available in the
+semi-supervised or unsupervised case) was met.
+Architecture and Optimization
+For the translator, we tested several styles including encoder-decoder designs, variational
+autoencoders, and self-attention networks as well as different architectures including recurrent
+networks (long-short term memory network), convolutional networks (temporal convolution),
+
+convolutional-recurrent networks (often used in human activity recognition (46, 47), and
+transformer networks. The U-Net architecture (48), which has been shown to effectively translate
+IMU signals for use in human activity recognition (49), performed best with regard to training
+time and translation performance on labeled exoskeleton data. The selected discriminator is
+based on An et. al. (37) (though altered to employ 1D convolutions). This discriminator
+outperformed several types of discriminators, including other convolutional discriminators
+(based on networks in (37, 50, 51)), recurrent discriminators, and U-Net-style discriminators.
+To optimize the different networks, we ran preliminary tests to choose the general architecture
+and then performed Bayesian optimization using a high-performance computing cluster to select
+the hyperparameters for the network. We initialized the U-Net translator based on
+hyperparameters presented in (49) and then further optimized relevant parameters around
+moment estimation RMSE for the hip with all tasks and participants included (due to long run
+times this was limited to 30 iterations). The chosen network architecture for the U-Net translator
+as well as the optimization search space are given in table S1. We also found that using linear
+upsampling rather than transpose convolution increased the performance of our final model. For
+the discriminator, we selected some hyperparameters based on AdaptNet (37) and then chose
+specific hyperparameters based on the constraints of the U-Net (such as an input sequence length
+of 256). The optimized hyperparameters from Molinaro et. al. were selected for the moment
+estimator (12).
+Once the individual networks were in place, we again used Bayesian hyperparameter
+optimization to determine the hyperparameters for the network as a whole (including loss
+function weighting parameters from equations S9 and S10 as well as learning rates and training
+schedules). The objective for optimization was moment estimation error in terms of RMSE. For
+the semi-supervised case, initial tests showed that four tasks appeared to be an inflection point
+where additional tasks contributed less to performance, thus the optimization was based on four
+included tasks following the optimal task order in Molinaro et. al. (12). For the unsupervised
+case, a similar procedure was followed but no labeled tasks were included. The bounds of the
+optimization as well as the selected hyperparameters are given in table S2. Both optimizations
+were stopped after 75 iterations.
+All models were trained until the RMSE on a left-out validation participant stopped improving
+(with a patience of 25 used to determine when this occurred). Early stopping was found to be
+important given the volatility of the GAN networks over epochs. Once training was stopped, a
+new previously unseen participant (with the same limited training tasks) formed the testing set.
+Thus, for the 15 participants (from Phase 1 and 2) reserved for training and hyperparameter
+tuning, 13 participants were used as a training set, one as a validation participant to determine the
+early stopping criterion, and one was used as a testing participant. For the unsupervised model,
+early stopping was determined using a left-out participant from the open-source biomechanics
+(simulated) domain since no labeled exoskeleton data was available. To determine
+hyperparameters that were best across multiple participants, we used 5-fold cross validation
+leaving out participants from Phase 2. Thus, the validation and testing participants were always
+chosen from Phase 2 data and each participant was used as the testing participant once.
+
+To determine the specific tasks that would be included for our semi-supervised approach in Fig
+2A-D, we used a forward task selection algorithm similar to that used in Molinaro et. al. (12). To
+seed the optimization, we chose the task that, when used by itself during training, resulted in the
+lowest RMSE error across all tasks. From there, tasks were added sequentially by selecting the
+task that when added to the training set resulted in the greatest decrease in RMSE across all tasks
+other than itself with respect to the previous iteration. The RMSE differences were averaged
+between hip and knee. Because the tasks for the baseline had already been optimized in Molinaro
+et. al. (12), we continued to use that set of tasks for the baseline.
+To determine the number of participants to include for the semi-supervised approach in Fig
+2E&F, we folded across all of the participants to determine the benefit of adding an average
+participant. We first added participants from Phase 2 and then Phase 1, but the performance was
+always assessed on left-out participants from Phase 2 in keeping with the task optimization.
+It is important to note that all of this optimization was performed only with data collected from
+Phase 1 and Phase 2 of the exoskeleton dataset. This left the entire Phase 3 portion of the
+collection untouched and thus provided completely novel users for the offline validation on all
+28 activities.
+Comparing Offline versus Real-Time Performance
+To compare the performance between offline and online, we matched the tasks from the offline
+analysis to those tasks chosen for the real-time experiment. Figure S1 shows the comparison for
+each real-time deployed model for both the hip and the knee in terms of R2 between estimate and
+ground truth joint moment. The comparison between offline and online performance reveals that
+deploying the models in real-time did not reduce estimator performance. In fact, in several of the
+comparisons there was improved performance in real-time compared to offline. It is possible that
+this performance benefit comes from the coupling of estimation and actuation in the controller or
+that these particular participants had moments that were more similar to the training data. To
+verify the online results, we ran the real-time data through the models again post-hoc and found
+the same performance that we had online. At a minimum, this indicates that the coupling of
+estimation and actuation did not hinder the performance of the estimator in real-time.
+Performance of a Simple Translator without the GAN Architecture
+For the unsupervised approach, it would be impossible to use our domain adaptation approach
+without the GAN architecture. However, it is possible to train a sim to real translator without the
+bidirectional GAN in the semi-supervised case. To explore this possibility, we trained a translator
+(with the U-Net architecture) with only the limited labeled exoskeleton data across the
+participant addition sweep that we explored in Fig. 2. Thus, only the supervised loss was used for
+the training loss of the translator (equation S1) and the moment estimator was trained alongside
+the translator. We then compared this to our semi-supervised approach presented in that figure.
+The comparison is presented in fig S2. While there are not many individual statistically
+significant differences due to many comparisons, it is clear that using the GAN architecture is
+beneficial for the training process, specifically when fewer participants are available for training.
+However, this does demonstrate that when labeled data is not in scarce supply, a simple translator
+could be trained to allow access to new tasks from opensource biomechanics datasets without
+
+significant loss in performance compared to the GAN approach. The GAN approach provides
+more value as data becomes scarcer.
+Instability of the Unsupervised Baseline
+As highlighted in the results section, the unsupervised baseline trained using only simulated
+sensors was unstable at the hip during real-time deployment. As an example of this instability, a
+participant lifted their leg (hip flexion) and then placed their foot back on the ground. Although
+the participant stopped moving once their hip returned to 0 degrees, the hip actuator controlled
+by this unstable controller continued oscillating back and forth. This is shown in fig S3 and
+movie S1. Note that across both this movement and others, the other 4 controllers tested in realtime (the best-case model, our semi-supervised approach, the baseline semi-supervised approach,
+and our unsupervised approach) did not exhibit similar instability properties after robust testing
+across numerous users and activities.
+Extending Beyond Moment Estimation
+The approach we presented in this paper is not limited to joint moment estimation but could be a
+method to train estimators for many different outcome metrics, which can include both internal
+and external state estimates. To demonstrate this, we applied the same method presented for
+moment estimation to two additional outcome metrics: GRF and activity classification.
+For GRF estimation, we used a similar TCN architecture for the estimator, but with three outputs
+to estimate vertical, anterior-posterior shear, and mediolateral shear GRF. We then used the same
+training inputs paired with GRF labels within the bidirectional training approach to train a
+supervised and unsupervised model. We also trained the best-case model, supervised baseline,
+and unsupervised baseline for GRF to facilitate comparisons. The labels were not normalized so
+the MSE loss function emphasized estimation on larger signals more heavily (i.e. estimating
+vertical GRF was more important than the shear components). These results are summarized in
+figure S4.
+These results demonstrate that our bidirectional translation approach can provide statistically
+significant benefits in GRF estimation for vertical and anterior-posterior (AP) shear GRF (p <
+0.05). The best-case model error was Vertical RMSE: 0.10±0.00 BW, R2: 0.91±0.02, Shear AP:
+0.06±0.01 BW, R2: 0.51±0.04, Shear ML: 0.10±0.01 BW R2: 0.03±0.01 across all tasks while
+the supervised model was Vertical RMSE: 0.14±0.005 BW, R2: 0.84±0.02, Shear AP: 0.06±0.01
+BW, R2: 0.41±0.07, Shear ML: 0.10±0.01 BW R2: 0.04±0.02 and the unsupervised was Vertical
+RMSE: 0.17±0.005 BW, R2: 0.79±0.02, Shear AP: 0.07±0.01 BW, R2: 0.38±0.04, Shear ML:
+0.12±0.02 BW R2: 0.02±0.004. Even the best-case model lacked enough information to estimate
+mediolateral shear which may be due to the sensors or simply the low magnitude of the signal in
+general. To further understand these results, we visualized several time series examples of both
+vertical and shear AP GRF with representative plots (closely matching the task group average).
+Figure S5A demonstrates that due to the small magnitude of errors in vertical GRF estimation for
+the best-case model, larger percentage increases in RMSE for the other models do not represent a
+breakdown in the estimator. Figure S5B-C presents one of the best and worst case task groups for
+shear AP GRF estimation R2. Although R2 can be low, much of that is due to tasks that have
+minimal shear AP GRF whereas the estimator seems to perform well on tasks that have higher
+shear AP GRF forces. While it is difficult to compare directly to other estimators due to different
+
+sensors and tasks (and the number of tasks), we can roughly compare this to Hossain et. al. (52)
+who estimated GRF for several overlapping tasks (treadmill, ramp, and stair walking). Their
+results average to Vertical GRF r = 0.98 versus our best-case r = 0.98±0.01, our semi-supervised
+r = 0.96±0.01, and our unsupervised r = 0.94±0.02. Thus, presenting results in comparison to the
+best-case gives valuable information, comparable to the state-of-the-art in the field.
+We did not optimize any hyperparameters for GRF estimation because that was beyond the scope
+of this paper. We would anticipate that further optimization of the estimator model architecture
+and hyperparameters as well as our translation hyperparameters could result in higher accuracies
+and greater improvements, in particular for ML shear forces which are deemphasized in our
+model due to their low magnitude (our loss function is mean squared error).
+To further demonstrate the potential of this approach, we applied the same techniques to activity
+classification. We modified the output layer of our TCN architecture to continuously output one
+class out of the 28 activity groups used in this study. Due to the nature of classification, we have
+omitted the supervised portion of the analysis due to the lack of clear benefit from adding only a
+small number of tasks to a large classifier. The results for the unsupervised model are presented
+in figure S6.
+A one-way repeated measures ANOVA revealed statistical differences between controllers (F =
+365.17, df = 2, p < 0.01). Our unsupervised model had a task classification accuracy of 72±4%
+and an f1-score of 0.67±0.04 which was significantly higher (based on follow up multiple
+comparisons test with Bonferroni correction) than the baseline accuracy of 46±3% and an f1score of 0.42±0.03 and closer to the best-case accuracy of 83±4% and an f1-score 0.81±0.05.
+Both our unsupervised model and the baseline model were significantly different from the bestcase model. We did not change the taxonomy of tasks from our original work even though, in
+this case, some classes (such as weighted walk and walk) are almost indistinguishable. However,
+these results still demonstrate the value of the translation in substantially improving classification
+accuracy. Our best-case accuracy seems reasonable when compared to other task estimators; for
+example, Beil et. al. achieved only 84% classification accuracy for a much smaller 13 mode
+classifier based on lower limb sensors (53). Further optimization as well as changes to the
+categorization of tasks would likely lead to improved overall performance.
+Direct Comparison to Previous Results
+Due to the similarities in the models, it is possible to more directly compare our best-case model
+during our real-time experiments to that of our previous publication (12). This is helpful because
+it gives further confirmation that our comparisons to the best-case model are similar to
+comparing to our previous publication. The only differences between the two models are that in
+this paper we do not use pressure insoles or a foot IMU, we use all 28 task groups for training,
+and we also do not estimate delayed hip moments. We present this comparison in terms of RMSE
+between model estimated joint moments and ground truth joint moments because RMSE is the
+basis for our percentage differences (fig S7).
+To compare more concretely, we used the two one sided t-test equivalence test to compare the
+equivalence of the two distributions. We predefined a threshold of 0.02 Nm/kg to be counted as
+similar. The test demonstrated that the absolute difference between our results and our previous
+
+publication was less than 0.02 Nm/kg (about 2% of normal level ground walking joint moments)
+for the hip (p = 0.024) and the knee (p = 0.0496).
+Pilot Metabolic Cost of Level Ground Walking for Each Moment Estimator
+Unlike lifting weight or incline, level ground walking with this device previously showed a
+significant increase in metabolic cost, as the knee actuators in particular add substantial mass and
+additional back-drive inertia (12). Given both this fact and the fact that level ground walking
+requires less net positive mechanical work than our other two tasks, we sought to explore
+whether our domain adaptation models could still perform similarly to the best-case model even
+for this task. We had three participants (2 male, 1 female) return to perform six-minute walking
+bouts using the same procedures outlined for our other metabolic cost experiments. Level ground
+walking is one of our trained tasks for the semi-supervised models, so to compensate for this we
+chose a walking speed of 1.5 m/s to maximize the difference from the training data (which
+included walking at 1.2 m/s and 1.8 m/s). Due to an exoskeleton malfunction, one trial for
+participant BT15 only lasted five minutes, so a first order fit estimate was used to estimate steady
+state metabolic cost for that trial (40, 41). These results along with the average estimated joint
+moment for each controller are presented in fig. S8.
+Metabolic cost increased while wearing the exoskeleton similar to our previous work (8% in
+(12)). Across the three participants, there seems to be a slight additional increase for our
+unsupervised model compared to the best-case and very little difference between our semisupervised model and the best-case model. This closely matches the results from our primary
+metabolic cost tasks (incline and lift weight) with the transfer learning conditions closely
+approximating the best-case scenario with minimal losses (likely non-significant in both cases).
+Exploring the Relative Impact of Sensor Noise and Human-Exoskeleton Interaction
+To further probe into how much the model is learning about human interaction with the
+exoskeleton, we trained an additional unsupervised model using simulated sensor data rather
+than real sensor data for the unlabeled exoskeleton data. The simulated sensor data were pulled
+from the same trials as the real data where the user was wearing the exoskeleton. These data are
+helpful because it captures whatever initial changes the person makes to wearing a device but
+does not contain all of the sensor specific benefits of having the real data. This means that this
+intermediate model should learn some things about exoskeleton interaction, but it should not
+perform as well as the model that is also learning to translate with unlabeled examples of real
+sensor noise. As with all of the unsupervised models, we do not give the models data where the
+exoskeleton is actuated since that would require a controller to have already been developed for
+the device and thus take away from the impact of being able to train a controller completely with
+unlabeled and unactuated data. Thus, this does not represent learning human adaptation to
+powered assistance but only adaptation to the device mass and range of motion constraints. This
+model is compared to the baseline and our approach with real sensors in figure S9. This shows
+that some of the benefit from translation is due to learning real sensor noise characteristics and
+placement (especially at the hip from light grey to dark grey) but some also seems to come from
+learning about the human-exoskeleton interaction even without actuation (purple to light grey).
+Analysis of the Benefit of Participant Additions to the Unsupervised Moment Estimator
+
+To understand the impact of the quantity of unlabeled data included in our domain adaptation
+approach, we progressively added participants to our unsupervised moment estimator. We chose
+to perform this analysis on the unsupervised estimator to clearly see the benefit without the
+additional factor of the small, labeled dataset included in the semi-supervised estimator training.
+The unsupervised baseline includes no unlabeled data thus we can place this model as the zero
+unlabeled participants scenario. We then sequentially added in unlabeled participants (data of a
+user wearing the exoskeleton without any assistance being provided and without any joint
+moment labels) one-by-one until we reached the ten participants that we used for our
+unsupervised model. To avoid any ordering effect of the participants, we trained a separate model
+adding each participant in at each step and averaged the results. Thus, we trained ten models
+each with one of the unlabeled participants included and then average the results of those models
+to create the data point for including one participant. We continued this until we reached ten
+participants. We chose to run these trained models on the offline testing set. Similar to our
+optimization results in Fig. 2B, we average the hip and knee moment estimation RMSE to give a
+single value. These results are shown in fig. S10.
+The most benefit came from including the first participant; after which, the RMSE leveled out
+until the final couple participants. For those last couple participants, we see another more marked
+improvement in accuracy. This could be due to a more balanced set of unlabeled exoskeleton
+data compared to the biomechanics data without an exoskeleton or from the fact that the
+hyperparameters and loss weightings were based on using more data (ten participants). These
+results, however, indicate that even more unlabeled participants could yield further
+improvements because it does not appear to have saturated.
+Supplementary Figures:
+
+Fig S1. Comparison of offline versus real-time performance across different models. Task
+matched data from eight participants offline and in real-time are compared between each
+deployed real-time model type at the hip (A) and at the knee (B). Error bars represent the
+standard deviation across eight participants. Statistical significance is assessed by two sample ttests for each online/real-time pair.
+
+Fig S2. Results from comparing our approach with and without GAN loss. The comparison
+between a simple translator without the GAN architecture and our approach with the GAN
+architecture (with attendant GAN loss, cycle loss, and identity loss) is presented across
+participant additions where cross-folding is used to get the average benefit of adding an
+additional participant. These are presented for the hip (A) and knee (B) in terms of the
+percentage increase in RMSE compared to the best-case model. Error bars indicate the standard
+deviation across five tested participants. Asterisks indicate statistical significance between
+models with and without the GAN loss based on controlling the false rate of discovery (q <
+0.05).
+
+Fig S3. Instability when deploying the unsupervised baseline in real-time as demonstrated
+by the oscillating behavior of the hip angle. A participant lifted their leg and then placed it
+back on the ground; however, the controller continued oscillating the hip joint after the user’s
+desired motion had terminated. Extension is positive for the hip encoder angle.
+
+Fig S4. Applying our translation approach to 3D ground reaction force (GRF) estimation.
+Results for the semi-supervised case are presented for vertical GRF (A), anterior-posterior (AP)
+shear (B), and mediolateral (ML) shear (C) in terms of the percentage increase in RMSE as
+compared to the best-case model. The corresponding results for the unsupervised case are
+presented for vertical GRF (E), AP shear (F), and ML shear (G). Error bars represent the
+standard deviation across eight participants. Averages are calculated across all 28 tasks first and
+then statistics are calculated across participants using t-tests. The R2 for each task, averaged
+across participants, for vertical and shear AP GRF are presented for the semi-supervised case (D)
+and for the unsupervised case (H). Error bars were omitted for clarity, and the triangles represent
+the mean across tasks.
+
+Fig S5. Ground reaction force (GRF) estimation time series for semi-supervised models.
+Representative time series graphs are shown for vertical GRF estimation during incline walking
+(A) for the semi-supervised baseline, our semi-supervised approach, the best-case model, and the
+ground truth joint moments. The actual task RMSE and percent increase compared to the bestcase model are shown on the left while a timeseries section chosen to best match the task average
+RMSE and R2 is shown on the right. Error bars represent the standard deviation across eight
+participants. Representative time series (chosen as above) are also shown for the shear GRF
+estimation during a high performing task (jogging while lifting knees) (B) and during a low
+performing task (stand while assuming three different poses) (C). The exact RMSE and R2 for
+each graph is shown above each plot.
+
+Fig S6. Applying our translation approach to activity classification. Results are presented for
+our unsupervised approach as compared to the unsupervised baseline and the best-case model.
+Accuracy is assessed across all 28 tasks on eight participants. Statistical differences are based on
+a one-way ANOVA followed up by multiple comparisons tests with Bonferroni correction. Error
+bars represent the standard deviation across eight participants.
+
+Fig S7. Direct comparison between our results and the task matched results from our
+previous publication. The real time results from this study (N=8) for hip moments (A) and knee
+moments (B) can be directly compared with the results from our previous study (N=10) after
+selecting the eight matching tasks. Error bars represent the standard deviation across participants.
+
+Fig S8. Net metabolic cost of level ground walking. The average net metabolic of walking at
+1.5 m/s in both of our translated models as well as the best-case model and without an
+exoskeleton are shown on the left (A). Percentage increase compared to the No Exo case are
+above each bar and the exact participant values are also shown for each condition. Error bars
+represent the standard deviation across three participants. (B) The line represents the average of
+the moment estimate by gait cycle across participants, and the haze represents the standard
+deviation across participant averages.
+
+Fig S9. Comparison of the impact of using different types of unlabeled data. Results from
+two models using our unsupervised approach are compared to the unsupervised baseline. The
+Exo Real unlabeled dataset is drawn from using real exoskeleton data collected while the user
+wore the exoskeleton unpowered and the Exo Sim unlabeled dataset is the result from using
+simulated sensors from motion capture during those same collections. These results are first
+averaged across all 28 activities and then averaged such that the error bars represent the standard
+deviation across eight participants.
+
+Fig S10. Analysis of the error reduction based on the number of unlabeled data
+participants. The average hip and knee moment RMSE is presented for each added unlabeled
+participant. Each of the middle points represent an average of ten models (from cross folding
+across added participants) each tested on the offline testing set (N=8). The first data point is the
+unsupervised baseline model and the final datapoint is our unsupervised model. Error bars
+represent the standard deviation across the eight offline testing participants.
+Table S1. Hyperparameter Optimization of the UNet Translator
+Hyperparameter
+
+Search Space
+
+Selected Value
+
+Sequence Length
+
+32, 64, 128, 256
+
+256*
+
+Depth
+
+2, 3, 4, 5
+
+4
+
+Kernel Size
+(Convolution)
+
+2, 3, 4, 5
+
+5
+
+Dropout
+
+[0.0, 0.3]
+
+0.0
+
+FSize
+
+-
+
+32
+
+Kernel Size
+(Pooling)
+
+-
+
+2
+
+* Further optimization after the fact revealed no added beneﬁt from increasing to the next power of two, 512
+
+Table S2. Hyperparameter optimization of our complete network
+Search Space
+(Semi-Supervised)
+[0, 2]
+
+Selected Value (SemiSupervised)
+0.68
+
+Search Space
+(Unsupervised)
+[0, 2]
+
+Selected Value
+(Unsupervised)
+0.90
+
+𝜆𝜆𝐺𝐺𝐺𝐺𝐺𝐺
+
+[0, 2]
+
+4.9e-3
+
+-
+
+1
+
+[0, 2]
+
+0.31
+
+[0, 2]
+
+1.86
+
+𝜆𝜆𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚𝑚
+
+-
+
+0
+
+[0, 2]
+
+1.21
+
+Learning Rate
+(Translator)
+
+5e-5,1e-4,5e-4,1e-3
+
+5e-4
+
+5e-5,1e-4,5e-4,1e-3
+
+1e-3
+
+Learning Rate
+(Discriminator)
+
+5e-5,1e-4,5e-4,1e-3
+
+5e-4
+
+5e-5,1e-4,5e-4,1e-3
+
+1e-3
+
+Learning Rate
+(Moment Est.)
+
+5e-5,1e-4,5e-4,1e-3
+
+1e-3
+
+5e-5,1e-4,5e-4,1e-3
+
+5e-4
+
+Discriminator Training
+Schedule (Epochs)
+
+1,5,10
+
+1
+
+1,5,10
+
+1
+
+Moment Estimator
+Training Start (Epochs)
+
+0,5,10,15,20
+
+0
+
+0,5,10,15,20
+
+20
+
+Hyperparameter
+𝜆𝜆𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐𝑐
+
+𝜆𝜆𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖𝑖
+
+
