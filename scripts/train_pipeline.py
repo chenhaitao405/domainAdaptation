@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import random
@@ -331,12 +332,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps-per-epoch", type=int, default=None, help="每个epoch迭代次数；默认=min(len loaders))")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--seq-len", type=int, default=256, help="裁剪窗口长度")
-    parser.add_argument("--base-channels", type=int, default=64, help="U-Net初始通道数")
+    parser.add_argument("--base-channels", type=int, default=128, help="U-Net初始通道数")
     parser.add_argument("--unet-depth", type=int, default=4, help="U-Net下采样深度")
-    parser.add_argument("--gen-lr", type=float, default=1e-3)
-    parser.add_argument("--disc-lr", type=float, default=1e-3)
-    parser.add_argument("--lambda-cycle", type=float, default=0.9)
-    parser.add_argument("--lambda-identity", type=float, default=1.86)
+    parser.add_argument("--gen-lr", type=float, default=2e-3)
+    parser.add_argument("--disc-lr", type=float, default=5e-4)
+    parser.add_argument("--lambda-cycle", type=float, default=0.5)
+    parser.add_argument("--lambda-identity", type=float, default=1.0)
     parser.add_argument("--lambda-gan", type=float, default=1.0)
     parser.add_argument("--device", type=str, default="cuda", help="训练设备，例如 cuda 或 cpu")
     parser.add_argument("--num-workers", type=int, default=4)
@@ -350,8 +351,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlflow", action="store_true", help="启用MLflow记录")
     parser.add_argument("--mlflow-uri", type=str, default=None, help="可选MLflow Tracking URI")
     parser.add_argument("--mlflow-experiment", type=str, default="domain_adaptation", help="MLflow实验名")
-    parser.add_argument("--lambda-moment", type=float, default=1.21, help="力矩估计损失权重")
-    parser.add_argument("--moment-start-epoch", type=int, default=20, help="力矩估计损失的启动epoch")
+    parser.add_argument("--lambda-moment", type=float, default=2.0, help="力矩估计损失权重")
+    parser.add_argument("--moment-start-epoch", type=int, default=10, help="力矩估计损失的启动epoch")
     parser.add_argument("--tcn-num-channels", type=str, default="80,80,80,80,80", help="TCN每层通道数, 逗号分隔")
     parser.add_argument("--tcn-kernel-size", type=int, default=5, help="TCN卷积核大小")
     parser.add_argument("--tcn-dropout", type=float, default=0.15, help="TCN dropout")
@@ -403,6 +404,31 @@ def _prepare_run_directory(base_dir: str, run_name: Optional[str]) -> Tuple[str,
     return final_name, str(run_path)
 
 
+_EPOCH_METRIC_FIELDS = [
+    "epoch",
+    "gen_total",
+    "adv_loss",
+    "cycle_loss",
+    "identity_loss",
+    "moment_loss",
+    "disc_loss",
+]
+
+
+def _append_epoch_metrics(csv_path: str, epoch: int, metrics: Dict[str, float]) -> None:
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    file_exists = os.path.exists(csv_path)
+    row = {"epoch": epoch}
+    for field in _EPOCH_METRIC_FIELDS[1:]:
+        value = metrics.get(field)
+        row[field] = f"{value:.6f}" if isinstance(value, (float, int)) else ""
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=_EPOCH_METRIC_FIELDS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 def main() -> None:
     args = parse_args()
     _set_seed(args.seed)
@@ -426,6 +452,7 @@ def main() -> None:
     run_name, run_dir = _prepare_run_directory(args.output_dir, args.run_name)
     args.run_name = run_name
     print(f"Run directory: {run_dir}")
+    metrics_csv_path = os.path.join(run_dir, "epoch_metrics.csv")
 
     if args.mlflow:
         if args.mlflow_uri:
@@ -553,6 +580,7 @@ def main() -> None:
                         mlflow.log_metrics({k: v for k, v in avg_metrics.items()}, step=global_step)
 
             epoch_avg = {k: v / steps_per_epoch for k, v in epoch_metrics.items()}
+            _append_epoch_metrics(metrics_csv_path, epoch, epoch_avg)
             metric = epoch_avg.get("gen_total")
             if metric is not None and metric < best_metric:
                 best_metric = metric
