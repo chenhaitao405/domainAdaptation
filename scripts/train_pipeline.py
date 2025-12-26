@@ -615,7 +615,6 @@ def main() -> None:
         best_epoch = None
         best_val_metric = float("inf")
         val_patience = 0
-        stop_training = False
         best_path = os.path.join(run_dir, "best.pt")
         last_path = os.path.join(run_dir, "last.pt")
         best_tcn_path = os.path.join(run_dir, "best_tcn.tar") if args.lambda_moment > 0 else None
@@ -687,12 +686,7 @@ def main() -> None:
                     print(f"Validation did not improve for {val_patience} consecutive evaluations.")
                     if val_patience >= VAL_PATIENCE:
                         print("Early stopping triggered due to lack of validation improvement.")
-                        stop_training = True
                         break
-
-        if stop_training:
-            break
-
         if best_epoch is not None:
             print(f"Best epoch: {best_epoch} (val MSE={best_val_metric:.6f}) -> {best_path}")
         else:
