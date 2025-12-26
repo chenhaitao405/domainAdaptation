@@ -1,13 +1,25 @@
 """Dataset-level configuration objects."""
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 DEFAULT_DATA_DIRS = [
     "/home/num2/datasets/EXO/Phase1And2_Parsed/Parsed",
 ]
-#/home/lenovo/code/CHT/datasets/EXO/Phase1And2_Parsed
+SSH_DEFAULT_DATA_DIRS = [
+    "/home/lenovo/code/CHT/datasets/EXO/Phase1And2_Parsed"
+]
+
+
+def _default_data_dirs() -> List[str]:
+    """Infer正确的数据目录，支持 SSH/本地启动."""
+    if any(os.environ.get(var) for var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION")):
+        return list(SSH_DEFAULT_DATA_DIRS)
+    return list(DEFAULT_DATA_DIRS)
+
 
 DEFAULT_REAL_SENSOR_NAMES = [
     # "foot_imu_*_gyro_x",
@@ -73,7 +85,7 @@ DEFAULT_PARTICIPANT_MASSES = {
 class DatasetConfig:
     """Container for dataset-related hyperparameters."""
 
-    data_dirs: List[str] = field(default_factory=lambda: list(DEFAULT_DATA_DIRS))
+    data_dirs: List[str] = field(default_factory=_default_data_dirs)
     side: str = "r"
     real_sensor_names: List[str] = field(
         default_factory=lambda: list(DEFAULT_REAL_SENSOR_NAMES)

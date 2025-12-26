@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple, List, Optional
+import random
 
 import torch
 import torch.nn as nn
@@ -128,6 +129,34 @@ class UNet1D(nn.Module):
         return 3.0 * self.final_activation(x)
 
 
+class ReplayBuffer:
+    """维护历史生成样本以稳定判别器训练."""
+
+    def __init__(self, max_size: int = 50) -> None:
+        self.max_size = max_size
+        self.data: List[torch.Tensor] = []
+
+    def push_and_pop(self, batch: torch.Tensor) -> torch.Tensor:
+        if batch.dim() == 3:
+            samples = torch.split(batch.detach(), 1, dim=0)
+        else:
+            samples = batch.detach().unsqueeze(0)
+        output: List[torch.Tensor] = []
+        for sample in samples:
+            if len(self.data) < self.max_size:
+                self.data.append(sample)
+                output.append(sample)
+            else:
+                if random.random() > 0.5:
+                    idx = random.randint(0, self.max_size - 1)
+                    stored = self.data[idx].clone()
+                    self.data[idx] = sample
+                    output.append(stored)
+                else:
+                    output.append(sample)
+        return torch.cat(output, dim=0)
+
+
 class AdaptNetDiscriminator1D(nn.Module):
     """AdaptNet风格的一维判别器."""
 
@@ -237,6 +266,10 @@ class DomainAdaptationGAN(nn.Module):
         self.real2sim = Real2SimTranslator(config)
         self.disc_real = AdaptNetDiscriminator1D(config.real_channels)
         self.disc_sim = AdaptNetDiscriminator1D(config.sim_channels)
+        self.fake_real_buffer = ReplayBuffer()
+        self.fake_sim_buffer = ReplayBuffer()
+        self.real_label = 0.9
+        self.fake_label = 0.0
 
         self.to(device)
         self.real_weights = self._prepare_weight_tensor(config.real_modal_weights, config.real_channels)
@@ -387,8 +420,8 @@ class DomainAdaptationGAN(nn.Module):
 
         real_domain_onehot = self._domain_onehot(fake_real.size(0), 1)
         sim_domain_onehot = self._domain_onehot(fake_sim.size(0), 0)
-        adv_real = torch.mean((self.disc_real(fake_real, real_domain_onehot) - 1) ** 2)
-        adv_sim = torch.mean((self.disc_sim(fake_sim, sim_domain_onehot) - 1) ** 2)
+        adv_real = torch.mean((self.disc_real(fake_real, real_domain_onehot) - self.real_label) ** 2)
+        adv_sim = torch.mean((self.disc_sim(fake_sim, sim_domain_onehot) - self.real_label) ** 2)
         adv_loss = (adv_real + adv_sim)*0.5
 
         cycle_sim = self.real2sim(fake_real)
@@ -444,7 +477,7 @@ class DomainAdaptationGAN(nn.Module):
         pred_real = disc(real_data, real_labels)
         pred_fake = disc(fake_data.detach(), fake_labels)
         return 0.5 * (
-            torch.mean((pred_real - 1) ** 2) + torch.mean(pred_fake**2)
+            torch.mean((pred_real - self.real_label) ** 2) + torch.mean((pred_fake - self.fake_label) ** 2)
         )
 
     def training_step(self, batch: Dict[str, Any]) -> Dict[str, float]:
@@ -465,10 +498,10 @@ class DomainAdaptationGAN(nn.Module):
 
         self.set_requires_grad([self.disc_real, self.disc_sim], True)
         self.disc_optimizer.zero_grad()
-        fake_real = self.sim2real(sim_inputs).detach()
-        fake_sim = self.real2sim(real_inputs).detach()
-        disc_real_loss = self._discriminator_loss(self.disc_real, real_inputs, fake_real, 1, 0)
-        disc_sim_loss = self._discriminator_loss(self.disc_sim, sim_inputs, fake_sim, 0, 1)
+        buffered_fake_real = self.fake_real_buffer.push_and_pop(self.sim2real(sim_inputs).detach())
+        buffered_fake_sim = self.fake_sim_buffer.push_and_pop(self.real2sim(real_inputs).detach())
+        disc_real_loss = self._discriminator_loss(self.disc_real, real_inputs, buffered_fake_real, 1, 0)
+        disc_sim_loss = self._discriminator_loss(self.disc_sim, sim_inputs, buffered_fake_sim, 0, 1)
         disc_loss = disc_real_loss + disc_sim_loss
         disc_loss.backward()
         self.disc_optimizer.step()

@@ -25,7 +25,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from domain_adaptation.config import DatasetConfig
 from domain_adaptation.data import DataManager
+from domain_adaptation.data.sensor_dataset import SensorDataset
 from domain_adaptation.models.gan import DomainAdaptationGAN, GanConfig
+from domain_adaptation.utils.eval import (
+    load_trial_tensor,
+    get_channel_stats_tensors,
+    denormalize_sequence,
+    translate_sim_to_real,
+    compute_channel_mse,
+)
 
 
 def _set_seed(seed: int) -> None:
@@ -210,6 +218,72 @@ def _build_loader(
         drop_last=True,
         collate_fn=collate_fn,
     )
+
+
+def _filter_trials_by_participant(dataset: SensorDataset, participant: str) -> List[str]:
+    trials = [name for name in dataset.trial_names if name.startswith(participant)]
+    dataset.trial_names = trials
+    return trials
+
+
+def _build_validation_dataset(
+    dataset_cfg: DatasetConfig,
+    device: torch.device,
+    input_suffix: str,
+    label_suffix: str,
+    participant: str,
+) -> SensorDataset:
+    for data_dir in dataset_cfg.data_dirs:
+        dataset = SensorDataset(
+            data_dir=data_dir,
+            input_names=[name.replace("*", dataset_cfg.side) for name in dataset_cfg.input_names],
+            label_names=[name.replace("*", dataset_cfg.side) for name in dataset_cfg.label_names],
+            side=dataset_cfg.side,
+            participant_masses=dataset_cfg.participant_masses,
+            device=device,
+            input_file_suffix=input_suffix,
+            label_file_suffix=label_suffix,
+        )
+        filtered = _filter_trials_by_participant(dataset, participant)
+        if filtered:
+            return dataset
+    raise RuntimeError(f"未找到 {participant} 的校验trial")
+
+
+def _run_validation(
+    model: DomainAdaptationGAN,
+    dataset_cfg: DatasetConfig,
+    device: torch.device,
+    participant: str = "BT17",
+) -> float:
+    model.eval()
+    val_real_dataset = _build_validation_dataset(
+        dataset_cfg, device, "_exo.csv", "_moment_filt.csv", participant
+    )
+    val_sim_dataset = _build_validation_dataset(
+        dataset_cfg, device, "_exo_sim.csv", "_moment_filt_bio.csv", participant
+    )
+    trial_set = sorted(set(val_real_dataset.trial_names) & set(val_sim_dataset.trial_names))
+    if not trial_set:
+        raise RuntimeError(f"{participant} 缺少成对trial用于校验")
+    mean_tensor, std_tensor = get_channel_stats_tensors(val_real_dataset, device)
+    total_mse = 0.0
+    count = 0
+    with torch.no_grad():
+        for trial in trial_set:
+            real_tensor, real_len = load_trial_tensor(val_real_dataset, trial, device)
+            sim_tensor, sim_len = load_trial_tensor(val_sim_dataset, trial, device)
+            valid_len = min(real_len, sim_len)
+            sim_slice = sim_tensor[..., :valid_len]
+            real_slice = real_tensor[..., :valid_len]
+            generated = translate_sim_to_real(model, sim_slice)
+            gen_denorm = denormalize_sequence(generated, mean_tensor, std_tensor)
+            real_denorm = denormalize_sequence(real_slice, mean_tensor, std_tensor)
+            _, mse = compute_channel_mse(gen_denorm, real_denorm, valid_len)
+            total_mse += mse
+            count += 1
+    model.train()
+    return total_mse / max(count, 1)
 
 
 def _identify_modality(channel_name: str) -> Optional[str]:
@@ -414,6 +488,10 @@ _EPOCH_METRIC_FIELDS = [
     "disc_loss",
 ]
 
+VAL_INTERVAL = 3
+VAL_PATIENCE = 3
+VAL_PARTICIPANT = "BT17"
+
 
 def _append_epoch_metrics(csv_path: str, epoch: int, metrics: Dict[str, float]) -> None:
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
@@ -535,6 +613,9 @@ def main() -> None:
         sim_iter = iter(sim_loader)
         best_metric = float("inf")
         best_epoch = None
+        best_val_metric = float("inf")
+        val_patience = 0
+        stop_training = False
         best_path = os.path.join(run_dir, "best.pt")
         last_path = os.path.join(run_dir, "last.pt")
         best_tcn_path = os.path.join(run_dir, "best_tcn.tar") if args.lambda_moment > 0 else None
@@ -584,21 +665,38 @@ def main() -> None:
             metric = epoch_avg.get("gen_total")
             if metric is not None and metric < best_metric:
                 best_metric = metric
-                best_epoch = epoch
-                model.save_checkpoint(best_path)
-                if best_tcn_path:
-                    model.save_tcn_checkpoint(best_tcn_path, epoch, metric)
-                print(f"Best checkpoint updated at epoch {epoch} (gen_total={metric:.4f}) -> {best_path}")
 
             model.save_checkpoint(last_path)
             if last_tcn_path:
                 model.save_tcn_checkpoint(last_tcn_path, epoch, metric)
             print(f"Latest checkpoint saved to: {last_path}")
 
+            if epoch % VAL_INTERVAL == 0:
+                val_mse = _run_validation(model, dataset_cfg, model.device, participant=VAL_PARTICIPANT)
+                print(f"[Validation] Epoch {epoch}: Mean MSE={val_mse:.6f}")
+                if val_mse < best_val_metric:
+                    best_val_metric = val_mse
+                    best_epoch = epoch
+                    val_patience = 0
+                    model.save_checkpoint(best_path)
+                    if best_tcn_path:
+                        model.save_tcn_checkpoint(best_tcn_path, epoch, val_mse)
+                    print(f"Validation checkpoint updated at epoch {epoch} (MSE={val_mse:.6f}) -> {best_path}")
+                else:
+                    val_patience += 1
+                    print(f"Validation did not improve for {val_patience} consecutive evaluations.")
+                    if val_patience >= VAL_PATIENCE:
+                        print("Early stopping triggered due to lack of validation improvement.")
+                        stop_training = True
+                        break
+
+        if stop_training:
+            break
+
         if best_epoch is not None:
-            print(f"Best epoch: {best_epoch} (gen_total={best_metric:.4f}) -> {best_path}")
+            print(f"Best epoch: {best_epoch} (val MSE={best_val_metric:.6f}) -> {best_path}")
         else:
-            print("No valid best checkpoint (gen_total missing); only last checkpoint available.")
+            print("No validation improvement recorded; only last checkpoint available.")
 
         if args.mlflow:
             if os.path.exists(best_path):
