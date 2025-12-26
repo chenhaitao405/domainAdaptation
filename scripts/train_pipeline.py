@@ -434,6 +434,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tcn-eff-hist", type=int, default=248, help="TCN有效历史长度")
     parser.add_argument("--tcn-load-path", type=str, default=None, help="可选TCN checkpoint路径")
     parser.add_argument("--tcn-freeze", action="store_true", help="固定TCN参数，仅用于计算moment loss")
+    parser.add_argument("--disc-real-label", type=float, default=0.9, help="判别器label smoothing的真实标签值")
+    parser.add_argument("--disc-fake-label", type=float, default=0.0, help="判别器label smoothing的假标签值")
+    parser.add_argument("--replay-buffer-size", type=int, default=50, help="判别器fake buffer大小（0表示关闭）")
+    parser.add_argument("--val-participant", type=str, default="BT17", help="验证集受试者ID")
+    parser.add_argument("--val-interval", type=int, default=3, help="验证间隔（单位：epoch）")
+    parser.add_argument("--val-patience", type=int, default=3, help="验证连续不提升次数触发早停")
+    parser.add_argument("--no-validation", action="store_true", help="禁用验证与早停逻辑")
     return parser.parse_args()
 
 
@@ -488,9 +495,6 @@ _EPOCH_METRIC_FIELDS = [
     "disc_loss",
 ]
 
-VAL_INTERVAL = 3
-VAL_PATIENCE = 3
-VAL_PARTICIPANT = "BT17"
 
 
 def _append_epoch_metrics(csv_path: str, epoch: int, metrics: Dict[str, float]) -> None:
@@ -576,12 +580,12 @@ def main() -> None:
             gan_loss_weight=args.lambda_gan,
             device=args.device,
             sim_modal_weights=sim_weights,
-            real_modal_weights=real_weights,
-            label_channels=len(dataset_cfg.label_names),
-            lambda_moment=args.lambda_moment,
-            moment_start_epoch=args.moment_start_epoch,
-            tcn_num_channels=tcn_channels,
-            tcn_kernel_size=args.tcn_kernel_size,
+        real_modal_weights=real_weights,
+        label_channels=len(dataset_cfg.label_names),
+        lambda_moment=args.lambda_moment,
+        moment_start_epoch=args.moment_start_epoch,
+        tcn_num_channels=tcn_channels,
+        tcn_kernel_size=args.tcn_kernel_size,
             tcn_dropout=args.tcn_dropout,
             tcn_learning_rate=args.tcn_learning_rate,
             tcn_eff_hist=args.tcn_eff_hist,
@@ -589,6 +593,10 @@ def main() -> None:
             tcn_freeze=args.tcn_freeze,
         )
         model = DomainAdaptationGAN(gan_config)
+        model.fake_real_buffer.max_size = max(0, args.replay_buffer_size)
+        model.fake_sim_buffer.max_size = max(0, args.replay_buffer_size)
+        model.real_label = args.disc_real_label
+        model.fake_label = args.disc_fake_label
 
         if args.resume:
             print(f"加载checkpoint: {args.resume}")
@@ -615,6 +623,7 @@ def main() -> None:
         best_epoch = None
         best_val_metric = float("inf")
         val_patience = 0
+        use_validation = not args.no_validation
         best_path = os.path.join(run_dir, "best.pt")
         last_path = os.path.join(run_dir, "last.pt")
         best_tcn_path = os.path.join(run_dir, "best_tcn.tar") if args.lambda_moment > 0 else None
@@ -670,8 +679,8 @@ def main() -> None:
                 model.save_tcn_checkpoint(last_tcn_path, epoch, metric)
             print(f"Latest checkpoint saved to: {last_path}")
 
-            if epoch % VAL_INTERVAL == 0:
-                val_mse = _run_validation(model, dataset_cfg, model.device, participant=VAL_PARTICIPANT)
+            if use_validation and epoch % args.val_interval == 0:
+                val_mse = _run_validation(model, dataset_cfg, model.device, participant=args.val_participant)
                 print(f"[Validation] Epoch {epoch}: Mean MSE={val_mse:.6f}")
                 if val_mse < best_val_metric:
                     best_val_metric = val_mse
@@ -684,7 +693,7 @@ def main() -> None:
                 else:
                     val_patience += 1
                     print(f"Validation did not improve for {val_patience} consecutive evaluations.")
-                    if val_patience >= VAL_PATIENCE:
+                    if val_patience >= args.val_patience:
                         print("Early stopping triggered due to lack of validation improvement.")
                         break
         if best_epoch is not None:

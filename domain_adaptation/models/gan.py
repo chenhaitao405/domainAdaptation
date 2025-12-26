@@ -235,6 +235,16 @@ class Sim2RealTranslator(UNet1D):
             base_channels=config.base_channels,
             depth=config.depth,
         )
+class Sim2RealTranslator(UNet1D):
+    """模拟 -> 真实传感器的生成器."""
+
+    def __init__(self, config: GanConfig) -> None:
+        super().__init__(
+            in_channels=config.sim_channels,
+            out_channels=config.real_channels,
+            base_channels=config.base_channels,
+            depth=config.depth,
+        )
 
 
 class Real2SimTranslator(UNet1D):
