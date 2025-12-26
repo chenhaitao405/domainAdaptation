@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import random
@@ -24,7 +25,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from domain_adaptation.config import DatasetConfig
 from domain_adaptation.data import DataManager
+from domain_adaptation.data.sensor_dataset import SensorDataset
 from domain_adaptation.models.gan import DomainAdaptationGAN, GanConfig
+from domain_adaptation.utils.eval import (
+    load_trial_tensor,
+    get_channel_stats_tensors,
+    denormalize_sequence,
+    translate_sim_to_real,
+    compute_channel_mse,
+)
 
 
 def _set_seed(seed: int) -> None:
@@ -211,6 +220,72 @@ def _build_loader(
     )
 
 
+def _filter_trials_by_participant(dataset: SensorDataset, participant: str) -> List[str]:
+    trials = [name for name in dataset.trial_names if name.startswith(participant)]
+    dataset.trial_names = trials
+    return trials
+
+
+def _build_validation_dataset(
+    dataset_cfg: DatasetConfig,
+    device: torch.device,
+    input_suffix: str,
+    label_suffix: str,
+    participant: str,
+) -> SensorDataset:
+    for data_dir in dataset_cfg.data_dirs:
+        dataset = SensorDataset(
+            data_dir=data_dir,
+            input_names=[name.replace("*", dataset_cfg.side) for name in dataset_cfg.input_names],
+            label_names=[name.replace("*", dataset_cfg.side) for name in dataset_cfg.label_names],
+            side=dataset_cfg.side,
+            participant_masses=dataset_cfg.participant_masses,
+            device=device,
+            input_file_suffix=input_suffix,
+            label_file_suffix=label_suffix,
+        )
+        filtered = _filter_trials_by_participant(dataset, participant)
+        if filtered:
+            return dataset
+    raise RuntimeError(f"未找到 {participant} 的校验trial")
+
+
+def _run_validation(
+    model: DomainAdaptationGAN,
+    dataset_cfg: DatasetConfig,
+    device: torch.device,
+    participant: str = "BT17",
+) -> float:
+    model.eval()
+    val_real_dataset = _build_validation_dataset(
+        dataset_cfg, device, "_exo.csv", "_moment_filt.csv", participant
+    )
+    val_sim_dataset = _build_validation_dataset(
+        dataset_cfg, device, "_exo_sim.csv", "_moment_filt_bio.csv", participant
+    )
+    trial_set = sorted(set(val_real_dataset.trial_names) & set(val_sim_dataset.trial_names))
+    if not trial_set:
+        raise RuntimeError(f"{participant} 缺少成对trial用于校验")
+    mean_tensor, std_tensor = get_channel_stats_tensors(val_real_dataset, device)
+    total_mse = 0.0
+    count = 0
+    with torch.no_grad():
+        for trial in trial_set:
+            real_tensor, real_len = load_trial_tensor(val_real_dataset, trial, device)
+            sim_tensor, sim_len = load_trial_tensor(val_sim_dataset, trial, device)
+            valid_len = min(real_len, sim_len)
+            sim_slice = sim_tensor[..., :valid_len]
+            real_slice = real_tensor[..., :valid_len]
+            generated = translate_sim_to_real(model, sim_slice)
+            gen_denorm = denormalize_sequence(generated, mean_tensor, std_tensor)
+            real_denorm = denormalize_sequence(real_slice, mean_tensor, std_tensor)
+            _, mse = compute_channel_mse(gen_denorm, real_denorm, valid_len)
+            total_mse += mse
+            count += 1
+    model.train()
+    return total_mse / max(count, 1)
+
+
 def _identify_modality(channel_name: str) -> Optional[str]:
     name = channel_name.lower()
     if "thigh_imu" in name and "_accel_" in name:
@@ -331,12 +406,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps-per-epoch", type=int, default=None, help="每个epoch迭代次数；默认=min(len loaders))")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--seq-len", type=int, default=256, help="裁剪窗口长度")
-    parser.add_argument("--base-channels", type=int, default=64, help="U-Net初始通道数")
+    parser.add_argument("--base-channels", type=int, default=128, help="U-Net初始通道数")
     parser.add_argument("--unet-depth", type=int, default=4, help="U-Net下采样深度")
-    parser.add_argument("--gen-lr", type=float, default=1e-3)
-    parser.add_argument("--disc-lr", type=float, default=1e-3)
-    parser.add_argument("--lambda-cycle", type=float, default=0.9)
-    parser.add_argument("--lambda-identity", type=float, default=1.86)
+    parser.add_argument("--gen-lr", type=float, default=2e-3)
+    parser.add_argument("--disc-lr", type=float, default=5e-4)
+    parser.add_argument("--lambda-cycle", type=float, default=0.5)
+    parser.add_argument("--lambda-identity", type=float, default=1.0)
     parser.add_argument("--lambda-gan", type=float, default=1.0)
     parser.add_argument("--device", type=str, default="cuda", help="训练设备，例如 cuda 或 cpu")
     parser.add_argument("--num-workers", type=int, default=4)
@@ -350,8 +425,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlflow", action="store_true", help="启用MLflow记录")
     parser.add_argument("--mlflow-uri", type=str, default=None, help="可选MLflow Tracking URI")
     parser.add_argument("--mlflow-experiment", type=str, default="domain_adaptation", help="MLflow实验名")
-    parser.add_argument("--lambda-moment", type=float, default=1.21, help="力矩估计损失权重")
-    parser.add_argument("--moment-start-epoch", type=int, default=20, help="力矩估计损失的启动epoch")
+    parser.add_argument("--lambda-moment", type=float, default=2.0, help="力矩估计损失权重")
+    parser.add_argument("--moment-start-epoch", type=int, default=10, help="力矩估计损失的启动epoch")
     parser.add_argument("--tcn-num-channels", type=str, default="80,80,80,80,80", help="TCN每层通道数, 逗号分隔")
     parser.add_argument("--tcn-kernel-size", type=int, default=5, help="TCN卷积核大小")
     parser.add_argument("--tcn-dropout", type=float, default=0.15, help="TCN dropout")
@@ -359,6 +434,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tcn-eff-hist", type=int, default=248, help="TCN有效历史长度")
     parser.add_argument("--tcn-load-path", type=str, default=None, help="可选TCN checkpoint路径")
     parser.add_argument("--tcn-freeze", action="store_true", help="固定TCN参数，仅用于计算moment loss")
+    parser.add_argument("--disc-real-label", type=float, default=0.9, help="判别器label smoothing的真实标签值")
+    parser.add_argument("--disc-fake-label", type=float, default=0.0, help="判别器label smoothing的假标签值")
+    parser.add_argument("--replay-buffer-size", type=int, default=50, help="判别器fake buffer大小（0表示关闭）")
+    parser.add_argument("--val-participant", type=str, default="BT17", help="验证集受试者ID")
+    parser.add_argument("--val-interval", type=int, default=3, help="验证间隔（单位：epoch）")
+    parser.add_argument("--val-patience", type=int, default=3, help="验证连续不提升次数触发早停")
+    parser.add_argument("--no-validation", action="store_true", help="禁用验证与早停逻辑")
     return parser.parse_args()
 
 
@@ -403,6 +485,32 @@ def _prepare_run_directory(base_dir: str, run_name: Optional[str]) -> Tuple[str,
     return final_name, str(run_path)
 
 
+_EPOCH_METRIC_FIELDS = [
+    "epoch",
+    "gen_total",
+    "adv_loss",
+    "cycle_loss",
+    "identity_loss",
+    "moment_loss",
+    "disc_loss",
+]
+
+
+
+def _append_epoch_metrics(csv_path: str, epoch: int, metrics: Dict[str, float]) -> None:
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    file_exists = os.path.exists(csv_path)
+    row = {"epoch": epoch}
+    for field in _EPOCH_METRIC_FIELDS[1:]:
+        value = metrics.get(field)
+        row[field] = f"{value:.6f}" if isinstance(value, (float, int)) else ""
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=_EPOCH_METRIC_FIELDS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 def main() -> None:
     args = parse_args()
     _set_seed(args.seed)
@@ -426,6 +534,7 @@ def main() -> None:
     run_name, run_dir = _prepare_run_directory(args.output_dir, args.run_name)
     args.run_name = run_name
     print(f"Run directory: {run_dir}")
+    metrics_csv_path = os.path.join(run_dir, "epoch_metrics.csv")
 
     if args.mlflow:
         if args.mlflow_uri:
@@ -471,12 +580,12 @@ def main() -> None:
             gan_loss_weight=args.lambda_gan,
             device=args.device,
             sim_modal_weights=sim_weights,
-            real_modal_weights=real_weights,
-            label_channels=len(dataset_cfg.label_names),
-            lambda_moment=args.lambda_moment,
-            moment_start_epoch=args.moment_start_epoch,
-            tcn_num_channels=tcn_channels,
-            tcn_kernel_size=args.tcn_kernel_size,
+        real_modal_weights=real_weights,
+        label_channels=len(dataset_cfg.label_names),
+        lambda_moment=args.lambda_moment,
+        moment_start_epoch=args.moment_start_epoch,
+        tcn_num_channels=tcn_channels,
+        tcn_kernel_size=args.tcn_kernel_size,
             tcn_dropout=args.tcn_dropout,
             tcn_learning_rate=args.tcn_learning_rate,
             tcn_eff_hist=args.tcn_eff_hist,
@@ -484,6 +593,10 @@ def main() -> None:
             tcn_freeze=args.tcn_freeze,
         )
         model = DomainAdaptationGAN(gan_config)
+        model.fake_real_buffer.max_size = max(0, args.replay_buffer_size)
+        model.fake_sim_buffer.max_size = max(0, args.replay_buffer_size)
+        model.real_label = args.disc_real_label
+        model.fake_label = args.disc_fake_label
 
         if args.resume:
             print(f"加载checkpoint: {args.resume}")
@@ -508,6 +621,9 @@ def main() -> None:
         sim_iter = iter(sim_loader)
         best_metric = float("inf")
         best_epoch = None
+        best_val_metric = float("inf")
+        val_patience = 0
+        use_validation = not args.no_validation
         best_path = os.path.join(run_dir, "best.pt")
         last_path = os.path.join(run_dir, "last.pt")
         best_tcn_path = os.path.join(run_dir, "best_tcn.tar") if args.lambda_moment > 0 else None
@@ -553,24 +669,37 @@ def main() -> None:
                         mlflow.log_metrics({k: v for k, v in avg_metrics.items()}, step=global_step)
 
             epoch_avg = {k: v / steps_per_epoch for k, v in epoch_metrics.items()}
+            _append_epoch_metrics(metrics_csv_path, epoch, epoch_avg)
             metric = epoch_avg.get("gen_total")
             if metric is not None and metric < best_metric:
                 best_metric = metric
-                best_epoch = epoch
-                model.save_checkpoint(best_path)
-                if best_tcn_path:
-                    model.save_tcn_checkpoint(best_tcn_path, epoch, metric)
-                print(f"Best checkpoint updated at epoch {epoch} (gen_total={metric:.4f}) -> {best_path}")
 
             model.save_checkpoint(last_path)
             if last_tcn_path:
                 model.save_tcn_checkpoint(last_tcn_path, epoch, metric)
             print(f"Latest checkpoint saved to: {last_path}")
 
+            if use_validation and epoch % args.val_interval == 0:
+                val_mse = _run_validation(model, dataset_cfg, model.device, participant=args.val_participant)
+                print(f"[Validation] Epoch {epoch}: Mean MSE={val_mse:.6f}")
+                if val_mse < best_val_metric:
+                    best_val_metric = val_mse
+                    best_epoch = epoch
+                    val_patience = 0
+                    model.save_checkpoint(best_path)
+                    if best_tcn_path:
+                        model.save_tcn_checkpoint(best_tcn_path, epoch, val_mse)
+                    print(f"Validation checkpoint updated at epoch {epoch} (MSE={val_mse:.6f}) -> {best_path}")
+                else:
+                    val_patience += 1
+                    print(f"Validation did not improve for {val_patience} consecutive evaluations.")
+                    if val_patience >= args.val_patience:
+                        print("Early stopping triggered due to lack of validation improvement.")
+                        break
         if best_epoch is not None:
-            print(f"Best epoch: {best_epoch} (gen_total={best_metric:.4f}) -> {best_path}")
+            print(f"Best epoch: {best_epoch} (val MSE={best_val_metric:.6f}) -> {best_path}")
         else:
-            print("No valid best checkpoint (gen_total missing); only last checkpoint available.")
+            print("No validation improvement recorded; only last checkpoint available.")
 
         if args.mlflow:
             if os.path.exists(best_path):
