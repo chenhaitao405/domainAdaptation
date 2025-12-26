@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 DEFAULT_DATA_DIRS = [
     "/home/num2/datasets/EXO/Phase1And2_Parsed/Parsed",
 ]
+#/home/lenovo/code/CHT/datasets/EXO/Phase1And2_Parsed
 
 DEFAULT_REAL_SENSOR_NAMES = [
     # "foot_imu_*_gyro_x",

@@ -30,8 +30,9 @@ def get_channel_stats_tensors(dataset, device: torch.device) -> Tuple[torch.Tens
 
 
 def denormalize_sequence(sequence: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
-    """按通道均值/方差反归一化."""
-    return sequence * std + mean
+    """按通道均值/方差反归一化，并在归一化域内做±3σ限幅."""
+    clamped = torch.clamp(sequence, min=-3.0, max=3.0)
+    return clamped * std + mean
 
 
 def translate_sim_to_real(model, sim_sequence: torch.Tensor) -> torch.Tensor:

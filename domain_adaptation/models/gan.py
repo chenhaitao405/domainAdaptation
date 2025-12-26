@@ -111,7 +111,7 @@ class UNet1D(nn.Module):
         self.up_blocks = nn.ModuleList(ups)
         self.final_dropout = nn.Dropout(p=0.5)
         self.final_conv = nn.Conv1d(bottleneck_out, out_channels, kernel_size=1)
-        self.final_activation = nn.LeakyReLU(0.01, inplace=True)
+        self.final_activation = nn.Tanh()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         skips: list[torch.Tensor] = []
@@ -125,7 +125,7 @@ class UNet1D(nn.Module):
             x = block(x, skip)
         x = self.final_dropout(x)
         x = self.final_conv(x)
-        return self.final_activation(x)
+        return 3.0 * self.final_activation(x)
 
 
 class AdaptNetDiscriminator1D(nn.Module):
